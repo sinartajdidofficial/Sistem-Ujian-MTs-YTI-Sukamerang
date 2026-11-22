@@ -6,7 +6,6 @@ import {
   Database,
   ExternalLink,
   FileWarning,
-  GraduationCap,
   KeyRound,
   LayoutList,
   Loader2,
@@ -26,6 +25,7 @@ import type { Exam } from "../lib/types";
 import ExamForm, { defaultExamForm, type ExamFormValues } from "../components/ExamForm";
 import MasterData, { type Catalog } from "../components/MasterData";
 import ProctorLink from "../components/ProctorLink";
+import { Logo } from "../components/Logo";
 import { useConfirm } from "../components/ConfirmDialog";
 
 const totalQ = (counts: Exam["counts"]) =>
@@ -208,8 +208,8 @@ export default function AdminPage() {
         />
         <div className="w-full max-w-sm">
           <div className="mb-5 flex flex-col items-center gap-2 text-center">
-            <span className="grid h-12 w-12 place-items-center rounded-xl bg-brand-deep text-sand">
-              <GraduationCap size={24} />
+            <span className="grid h-16 w-16 place-items-center rounded-2xl bg-white p-1 ring-1 ring-line">
+              <Logo size={56} />
             </span>
             <div className="leading-tight">
               <p className="text-[13px] font-extrabold text-ink">Panel Guru</p>
@@ -286,8 +286,8 @@ export default function AdminPage() {
     <div className="min-h-dvh bg-paper">
       <header className="sticky top-0 z-20 border-b border-line bg-white/95 backdrop-blur">
         <div className="mx-auto flex max-w-3xl items-center gap-2.5 px-4 py-2.5 lg:max-w-5xl">
-          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand-deep text-sand">
-            <GraduationCap size={16} />
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white p-0.5 ring-1 ring-line">
+            <Logo size={30} />
           </span>
           <div className="min-w-0 leading-tight">
             <p className="truncate text-[12.5px] font-extrabold text-ink">Panel Guru</p>

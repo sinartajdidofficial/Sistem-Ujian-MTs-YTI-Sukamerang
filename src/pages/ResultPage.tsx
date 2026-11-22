@@ -6,12 +6,12 @@ import {
   ArrowRight,
   CheckCircle2,
   Clock3,
-  GraduationCap,
   Loader2,
   PenLine,
   ShieldCheck,
   Target,
 } from "lucide-react";
+import { Logo } from "../components/Logo";
 import { studentApi, sessionToken } from "../lib/api";
 import type { Session } from "../lib/types";
 
@@ -96,8 +96,8 @@ export default function ResultPage() {
       />
 
       <header className="mx-auto flex max-w-3xl items-center gap-3 px-5 py-5 sm:px-8">
-        <span className="grid h-10 w-10 place-items-center rounded-xl bg-brand-deep text-sand">
-          <GraduationCap size={20} />
+        <span className="grid h-11 w-11 place-items-center rounded-xl bg-white p-1 ring-1 ring-line">
+          <Logo size={36} />
         </span>
         <div className="leading-tight">
           <p className="text-sm font-extrabold tracking-tight text-ink">MTs YTI Sukamerang</p>

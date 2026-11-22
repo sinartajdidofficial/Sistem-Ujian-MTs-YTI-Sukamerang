@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { ChevronDown, GraduationCap, KeyRound, Loader2, Lock, LogIn, UserRound, Users } from "lucide-react";
+import { ChevronDown, KeyRound, Loader2, Lock, LogIn, UserRound, Users } from "lucide-react";
+import { Logo } from "../components/Logo";
 import { ApiError, studentApi, sessionToken } from "../lib/api";
 import { unlockAudio } from "../lib/alarm";
 import type { ClassRow, StudentRow } from "../lib/types";
@@ -153,8 +154,8 @@ export default function LandingPage() {
       <main className="w-full max-w-md">
         <div className="card overflow-hidden shadow-[0_24px_60px_-32px_rgba(13,31,25,0.42)]">
           <div className="px-6 pb-5 pt-8 text-center">
-            <span className="mx-auto grid h-12 w-12 place-items-center rounded-xl bg-brand-deep text-sand shadow-sm ring-1 ring-brand-deep/25">
-              <GraduationCap size={24} />
+            <span className="mx-auto grid h-20 w-20 place-items-center rounded-2xl bg-white p-1 shadow-sm ring-1 ring-line">
+              <Logo size={72} />
             </span>
             <h1 className="mx-auto mt-4 max-w-[21rem] text-balance font-display text-[24px] font-semibold leading-[1.22] tracking-tight text-ink sm:text-[26px]">
               Sistem Asesmen Sumatif Akhir

@@ -17,6 +17,7 @@ import {
   VolumeX,
 } from "lucide-react";
 import { ApiError, proctorApi, proctorKey } from "../lib/api";
+import { Logo } from "../components/Logo";
 import { playNotify, unlockAudio } from "../lib/alarm";
 import type {
   MonitorEvent,
@@ -191,6 +192,9 @@ function Pemilihan({
 
   return (
     <div className="mx-auto max-w-3xl px-4 pb-10 pt-8 lg:max-w-5xl">
+      <span className="mx-auto mb-3 grid h-16 w-16 place-items-center rounded-2xl bg-white p-1 shadow-sm ring-1 ring-line">
+        <Logo size={56} />
+      </span>
       <h1 className="text-center font-display text-[27px] font-bold uppercase leading-tight tracking-[0.1em] text-ink sm:text-[40px] sm:tracking-[0.14em]">
         Pantau Ujian
       </h1>
