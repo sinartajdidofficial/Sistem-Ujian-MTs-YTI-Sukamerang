@@ -67,7 +67,7 @@ function cleanCounts(raw) {
   return out;
 }
 
-function cleanAnswers(raw) {
+function cleanAnswers(raw, limits = {}) {
   const source = raw && typeof raw === "object" ? raw : {};
   const out = {};
   for (const key of TYPES) {
@@ -79,10 +79,11 @@ function cleanAnswers(raw) {
         if (!Number.isFinite(index) || index < 1 || index > 200) continue;
         if (key === "pgk") {
           const letters = Array.isArray(value) ? value : [];
-          const set = [...new Set(letters.map((l) => String(l).toUpperCase().slice(0, 1)))].filter(
-            (l) => /[A-Z]/.test(l)
-          );
-          if (set.length) cleaned[String(index)] = set.sort();
+          const set = [...new Set(letters.map((l) => String(l).toUpperCase().slice(0, 1)))]
+            .filter((l) => /[A-Z]/.test(l))
+            .sort();
+          const cap = Number(limits[String(index)]) || 0;
+          if (set.length) cleaned[String(index)] = cap > 0 ? set.slice(0, cap) : set;
         } else if (key === "essay") {
           const text = String(value ?? "").slice(0, 5000);
           if (text.trim()) cleaned[String(index)] = text;
@@ -125,6 +126,21 @@ function cleanKey(raw, counts) {
     }
     out[key] = list;
   }
+  return out;
+}
+
+/**
+ * Batas pilihan soal PG kompleks MENGIKUTI KUNCI, bukan pengaturan ujian.
+ * Soal dengan 2 jawaban benar → peserta boleh memilih 2; 3 jawaban benar → 3.
+ * Yang dikirim ke peserta hanya JUMLAHNYA; huruf kuncinya tetap di server.
+ */
+export function pgkLimits(exam) {
+  const key = Array.isArray(exam?.answer_key?.pgk) ? exam.answer_key.pgk : [];
+  const out = {};
+  key.forEach((value, index) => {
+    const letters = Array.isArray(value) ? value.filter((letter) => /^[A-Z]$/.test(String(letter))) : [];
+    if (letters.length) out[String(index + 1)] = new Set(letters).size;
+  });
   return out;
 }
 
@@ -290,7 +306,7 @@ async function loadSession(req, res, next) {
   if (!found.rows.length) return res.status(404).json({ error: "Sesi ujian tidak ditemukan." });
   if (found.rows[0].token !== token) return res.status(403).json({ error: "Token sesi tidak cocok." });
   const exam = await q(
-    "SELECT id, code, title, subject, kelas, duration_minutes, status, counts, answer_key, match_options, pg_options, pgk_max, essay_max, max_violations, instructions, pdf_name, pdf_size, pdf_updated_at FROM exams WHERE id = $1",
+    "SELECT id, code, title, subject, kelas, duration_minutes, status, counts, answer_key, match_options, pg_options, essay_max, max_violations, instructions, pdf_name, pdf_size, pdf_updated_at FROM exams WHERE id = $1",
     [found.rows[0].exam_id]
   );
   if (!exam.rows.length) return res.status(404).json({ error: "Ujian tidak ditemukan." });
@@ -357,13 +373,13 @@ app.post("/api/admin/proctor-key/rotate", requireAdmin, async (_req, res) => {
 /* --- admin exams --- */
 
 const examPublicColumns = `id, code, title, subject, kelas, class_id, subject_id, duration_minutes, status, counts,
-  answer_key, match_options, pg_options, pgk_max, essay_max, max_violations, instructions, pdf_name, pdf_size,
+  answer_key, match_options, pg_options, essay_max, max_violations, instructions, pdf_name, pdf_size,
   pdf_updated_at, created_at`;
 
 app.get("/api/admin/exams", requireAdmin, async (_req, res) => {
   const result = await q(
     `SELECT e.id, e.code, e.title, e.subject, e.kelas, e.class_id, e.subject_id, e.duration_minutes, e.status, e.counts,
-            e.answer_key, e.match_options, e.pg_options, e.pgk_max, e.essay_max, e.max_violations, e.instructions,
+            e.answer_key, e.match_options, e.pg_options, e.essay_max, e.max_violations, e.instructions,
             e.pdf_name, e.pdf_size, e.pdf_updated_at, e.created_at,
             (SELECT count(*)::int FROM sessions s WHERE s.exam_id = e.id) AS session_count,
             (SELECT count(*)::int FROM sessions s WHERE s.exam_id = e.id AND s.submitted_at IS NOT NULL) AS submitted_count
@@ -431,8 +447,8 @@ app.post("/api/admin/exams", requireAdmin, async (req, res) => {
   if (!code) code = examCode();
   const result = await q(
     `INSERT INTO exams (code, title, subject, kelas, class_id, subject_id, duration_minutes, status, counts,
-       match_options, pg_options, essay_max, max_violations, instructions, pgk_max)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,'draft',$8,$9,$10,$11,$12,$13,$14) RETURNING ${examPublicColumns}`,
+       match_options, pg_options, essay_max, max_violations, instructions)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'draft',$8,$9,$10,$11,$12,$13) RETURNING ${examPublicColumns}`,
     [
       code,
       title,
@@ -447,7 +463,6 @@ app.post("/api/admin/exams", requireAdmin, async (req, res) => {
       clampInt(body.essay_max, 1, 100, 10),
       clampInt(body.max_violations, 1, 20, 5),
       String(body.instructions || "").slice(0, 2000),
-      clampInt(body.pgk_max, 0, 5, 0),
     ]
   );
   res.status(201).json({ exam: result.rows[0] });
@@ -471,8 +486,8 @@ app.patch("/api/admin/exams/:id", requireAdmin, async (req, res) => {
   const result = await q(
     `UPDATE exams SET title=$1, subject=$2, kelas=$3, duration_minutes=$4, status=$5, counts=$6,
        answer_key=$7, match_options=$8, essay_max=$9, max_violations=$10, instructions=$11, pg_options=$12,
-       class_id=$13, subject_id=$14, pgk_max=$15
-     WHERE id=$16 RETURNING ${examPublicColumns}`,
+       class_id=$13, subject_id=$14
+     WHERE id=$15 RETURNING ${examPublicColumns}`,
     [
       body.title !== undefined ? String(body.title).trim().slice(0, 160) || current.title : current.title,
       subject,
@@ -494,7 +509,6 @@ app.patch("/api/admin/exams/:id", requireAdmin, async (req, res) => {
       body.pg_options !== undefined ? clampInt(body.pg_options, 2, 5, current.pg_options) : current.pg_options,
       classId,
       subjectId,
-      body.pgk_max !== undefined ? clampInt(body.pgk_max, 0, 5, current.pgk_max) : current.pgk_max,
       req.params.id,
     ]
   );
@@ -821,7 +835,7 @@ app.get("/api/admin/exams/:id/pdf", requireAdmin, async (req, res) => {
 
 app.get("/api/exams/:code", async (req, res) => {
   const result = await q(
-    `SELECT id, code, title, subject, kelas, class_id, duration_minutes, status, counts, match_options, pg_options, pgk_max,
+    `SELECT id, code, title, subject, kelas, class_id, duration_minutes, status, counts, match_options, pg_options,
             essay_max, max_violations, instructions, pdf_name, pdf_size, pdf_updated_at
      FROM exams WHERE upper(code) = upper($1)`,
     [req.params.code]
@@ -863,7 +877,8 @@ function publicSession(session, exam) {
     essayMax: exam.essay_max,
     matchOptions: exam.match_options,
     pgOptions: exam.pg_options,
-    pgkMax: exam.pgk_max || 0,
+    /** batas pilihan per nomor untuk soal PG kompleks (dari kunci jawaban) */
+    pgkLimits: pgkLimits(exam),
     exam: {
       id: exam.id,
       code: exam.code,
@@ -986,16 +1001,7 @@ app.put("/api/sessions/:id/answers", loadSession, async (req, res) => {
     const row = await finalize(session, req.examRow, true);
     return res.status(409).json({ error: "Waktu ujian habis.", session: publicSession(row, req.examRow) });
   }
-  const answers = cleanAnswers(req.body?.answers);
-  const pgkLimit = Number(req.examRow?.pgk_max) || 0;
-  if (pgkLimit > 0) {
-    for (const key of Object.keys(answers.pgk || {})) {
-      const picked = answers.pgk[key];
-      if (Array.isArray(picked) && picked.length > pgkLimit) {
-        answers.pgk[key] = picked.slice(0, pgkLimit);
-      }
-    }
-  }
+  const answers = cleanAnswers(req.body?.answers, pgkLimits(req.examRow));
   const updated = await q(
     "UPDATE sessions SET answers = $2, last_seen = now() WHERE id = $1 RETURNING *",
     [session.id, answers]
@@ -1035,7 +1041,7 @@ app.post("/api/sessions/:id/submit", loadSession, async (req, res) => {
   if (session.submitted_at) {
     return res.json({ session: publicSession(withScore(session, req.examRow), req.examRow) });
   }
-  const answers = req.body?.answers ? cleanAnswers(req.body.answers) : session.answers;
+  const answers = req.body?.answers ? cleanAnswers(req.body.answers, pgkLimits(req.examRow)) : session.answers;
   const updated = await q("UPDATE sessions SET answers = $2 WHERE id = $1 RETURNING *", [
     session.id,
     answers,

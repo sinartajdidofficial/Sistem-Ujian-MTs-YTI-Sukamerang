@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS exams (
   pg_options int NOT NULL DEFAULT 4,
   essay_max int NOT NULL DEFAULT 10,
   max_violations int NOT NULL DEFAULT 5,
-  pgk_max int NOT NULL DEFAULT 0,
+  pgk_max int NOT NULL DEFAULT 0, -- sisa versi lama; batas PGK kini mengikuti kunci jawaban
   instructions text NOT NULL DEFAULT '',
   pdf bytea,
   pdf_path text,
@@ -130,7 +130,7 @@ CREATE TABLE IF NOT EXISTS students (
 CREATE INDEX IF NOT EXISTS students_class_idx ON students(class_id);
 
 ALTER TABLE exams ADD COLUMN IF NOT EXISTS pdf_path text;
-ALTER TABLE exams ADD COLUMN IF NOT EXISTS pgk_max int NOT NULL DEFAULT 0;
+ALTER TABLE exams ADD COLUMN IF NOT EXISTS pgk_max int NOT NULL DEFAULT 0; -- tidak dipakai lagi
 ALTER TABLE exams ADD COLUMN IF NOT EXISTS class_id int REFERENCES classes(id) ON DELETE SET NULL;
 ALTER TABLE exams ADD COLUMN IF NOT EXISTS subject_id int REFERENCES subjects(id) ON DELETE SET NULL;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS student_id int REFERENCES students(id) ON DELETE SET NULL;
