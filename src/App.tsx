@@ -4,6 +4,7 @@ import ExamPage from "./pages/ExamPage";
 import ResultPage from "./pages/ResultPage";
 import AdminPage from "./pages/AdminPage";
 import AdminExamPage from "./pages/AdminExamPage";
+import MonitorPage from "./pages/MonitorPage";
 import { ConfirmProvider } from "./components/ConfirmDialog";
 
 export default function App() {
@@ -15,6 +16,7 @@ export default function App() {
           <Route path="/ujian/:sessionId" element={<ExamPage />} />
           <Route path="/selesai/:sessionId" element={<ResultPage />} />
           <Route path="/guru" element={<AdminPage />} />
+          <Route path="/guru/pantau" element={<MonitorPage />} />
           <Route path="/guru/:examId" element={<AdminExamPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
