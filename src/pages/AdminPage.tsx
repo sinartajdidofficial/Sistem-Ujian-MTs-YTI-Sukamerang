@@ -25,6 +25,7 @@ import { ApiError, adminApi, adminToken } from "../lib/api";
 import type { Exam } from "../lib/types";
 import ExamForm, { defaultExamForm, type ExamFormValues } from "../components/ExamForm";
 import MasterData, { type Catalog } from "../components/MasterData";
+import ProctorLink from "../components/ProctorLink";
 import { useConfirm } from "../components/ConfirmDialog";
 
 const totalQ = (counts: Exam["counts"]) =>
@@ -374,6 +375,8 @@ export default function AdminPage() {
               <MiniStat icon={ShieldCheck} label="Dibuka" value={String(openCount)} tone="brand" />
               <MiniStat icon={Users} label="Peserta" value={String(sessionCount)} />
             </div>
+
+            <ProctorLink />
 
             <button
               type="button"

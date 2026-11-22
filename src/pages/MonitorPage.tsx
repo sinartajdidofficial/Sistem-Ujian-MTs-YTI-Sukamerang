@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, Navigate, useSearchParams } from "react-router-dom";
 import {
   Activity,
   ArrowLeft,
@@ -12,20 +11,29 @@ import {
   Loader2,
   RefreshCw,
   ShieldAlert,
+  ShieldX,
   Users,
   Volume2,
   VolumeX,
 } from "lucide-react";
-import { ApiError, adminApi, adminToken } from "../lib/api";
+import { ApiError, proctorApi, proctorKey } from "../lib/api";
 import { playNotify, unlockAudio } from "../lib/alarm";
-import type { Exam, MonitorEvent, MonitorSession, MonitorSnapshot } from "../lib/types";
+import type {
+  MonitorEvent,
+  MonitorSession,
+  MonitorSnapshot,
+  ProctorExam,
+} from "../lib/types";
 
 /* ------------------------------------------------------------------------------------------------
-   Papan pantau ujian untuk pengawas.
-   1) Pengawas memilih ujian (kelas/rombel) yang ingin dipantau.
-   2) Papan menampilkan peserta yang sedang mengerjakan + aliran pelanggaran.
-   3) Setiap pelanggaran baru langsung masuk sebagai notifikasi di layar pengawas
-      (dan notifikasi browser bila diizinkan).
+   Halaman pengawas — berdiri sendiri, terpisah dari panel guru.
+   Dibuka lewat SATU tautan dari guru: /pantau#k=KUNCI.
+   Pengawas lalu memilih sendiri ujian mana yang mau dipantau.
+
+   Yang sengaja TIDAK ada di halaman ini:
+   - kata sandi guru, sesi guru, dan tautan apa pun menuju /guru;
+   - kunci jawaban (server tidak mengirimkannya ke papan pantau);
+   - tombol mengubah data ujian. Pengawas hanya melihat dan mendengar.
 ------------------------------------------------------------------------------------------------ */
 
 const POLL_MS = 5000;
@@ -77,65 +85,107 @@ const statusSesi = (row: MonitorSession) => {
   return { text: "Mengerjakan", tone: "live" as const };
 };
 
+/* ---------------------------------------------- satu tautan, banyak ujian */
+
 type Toast = { id: number; title: string; body: string };
+type Denied = "none" | "missing" | "invalid";
 
 export default function MonitorPage() {
-  const [params, setParams] = useSearchParams();
-  const examId = Number(params.get("ujian") || 0);
-  const authed = !!adminToken.get();
+  const [key] = useState(() => proctorKey.readFromUrl());
+  const [examId, setExamId] = useState(0);
+  const [denied, setDenied] = useState<Denied>(key ? "none" : "missing");
 
-  if (!authed) return <Navigate to="/guru" replace />;
+  const tolakAkses = useCallback((err: unknown) => {
+    if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+      setDenied(err.status === 401 ? "missing" : "invalid");
+      return true;
+    }
+    return false;
+  }, []);
 
-  const keluar = (
-    <Link
-      to="/guru"
-      className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-muted hover:text-brand"
-    >
-      <ArrowLeft size={13} /> Kembali ke panel guru
-    </Link>
-  );
+  if (denied !== "none") return <TautanTidakBerlaku jenis={denied} />;
 
   return (
     <div className="min-h-dvh bg-paper pb-16">
       {examId ? (
-        <Papan key={examId} examId={examId} onGanti={() => setParams({}, { replace: true })} />
+        <Papan key={examId} examId={examId} onGanti={() => setExamId(0)} onTolak={tolakAkses} />
       ) : (
-        <Pemilihan onPilih={(id) => setParams({ ujian: String(id) })} />
+        <Pemilihan onPilih={setExamId} onTolak={tolakAkses} />
       )}
-      <div className="mx-auto max-w-3xl px-4 pt-4 lg:max-w-5xl">{keluar}</div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------ kalau tautannya bermasalah */
+
+function TautanTidakBerlaku({ jenis }: { jenis: Denied }) {
+  return (
+    <div className="grid min-h-dvh place-items-center bg-paper px-4 py-10">
+      <div className="card w-full max-w-sm p-6 text-center">
+        <span className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-danger-soft text-danger">
+          <ShieldX size={22} />
+        </span>
+        <h1 className="mt-3 text-[15px] font-extrabold text-ink">
+          {jenis === "missing" ? "Tautan pengawas tidak lengkap" : "Tautan pengawas sudah tidak berlaku"}
+        </h1>
+        <p className="mx-auto mt-1.5 max-w-[17rem] text-[12px] leading-relaxed text-muted">
+          {jenis === "missing"
+            ? "Halaman ini hanya bisa dibuka lewat tautan yang dibagikan guru pengawas. Salin tautannya secara utuh, lalu buka lagi."
+            : "Kunci pengawas sudah diganti oleh guru, sehingga tautan lama tidak bisa dipakai lagi. Minta tautan terbaru ke guru."}
+        </p>
+        <button
+          type="button"
+          onClick={() => {
+            if (jenis === "invalid") {
+              // buang kunci lama supaya tidak dipakai lagi, lalu mulai dari tautan bersih
+              proctorKey.clear();
+              window.location.replace(window.location.pathname);
+              return;
+            }
+            window.location.reload();
+          }}
+          className="btn-primary mt-4 w-full py-2.5"
+        >
+          <RefreshCw size={14} /> {jenis === "invalid" ? "Mulai dari tautan baru" : "Coba lagi"}
+        </button>
+      </div>
     </div>
   );
 }
 
 /* ------------------------------------------------------------- pilih ujian */
 
-function Pemilihan({ onPilih }: { onPilih: (examId: number) => void }) {
-  const [exams, setExams] = useState<Exam[] | null>(null);
+function Pemilihan({
+  onPilih,
+  onTolak,
+}: {
+  onPilih: (examId: number) => void;
+  onTolak: (err: unknown) => boolean;
+}) {
+  const [exams, setExams] = useState<ProctorExam[] | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
-    adminApi
+    proctorApi
       .exams()
       .then(({ exams: rows }) => {
         if (!cancelled) setExams(rows);
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof ApiError ? err.message : "Gagal memuat daftar ujian.");
+        if (cancelled || onTolak(err)) return;
+        setError(err instanceof ApiError ? err.message : "Gagal memuat daftar ujian.");
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [onTolak]);
 
-  /**
-   * Hanya ujian yang masih berlangsung yang ditawarkan. Ujian yang sudah selesai
-   * (ditutup guru) atau belum dibuka tidak muncul di daftar.
-   */
+  /** Server hanya mengirim ujian berstatus dibuka, jadi daftar ini sudah bersih. */
   const urut = useMemo(() => {
     if (!exams) return [];
     return exams
-      .filter((exam) => exam.status === "open")
+      .slice()
       .sort((a, b) => (b.session_count || 0) - (a.session_count || 0) || a.title.localeCompare(b.title, "id"));
   }, [exams]);
 
@@ -180,7 +230,9 @@ function Pemilihan({ onPilih }: { onPilih: (examId: number) => void }) {
                     <span className="rounded-md bg-brand-deep px-1.5 py-0.5 font-mono text-[10px] font-bold tracking-[0.16em] text-sand">
                       {exam.code}
                     </span>
-                    <StatusBadge status={exam.status} />
+                    <span className="rounded-md bg-brand px-1.5 py-0.5 text-[9.5px] font-extrabold uppercase tracking-wide text-white">
+                      Dibuka
+                    </span>
                   </div>
                   <p className="mt-1.5 truncate text-[14px] font-extrabold leading-snug text-ink">{exam.title}</p>
                   <p className="text-[11px] font-medium text-muted">
@@ -210,7 +262,15 @@ function Pemilihan({ onPilih }: { onPilih: (examId: number) => void }) {
 
 /* ----------------------------------------------------------------- papan */
 
-function Papan({ examId, onGanti }: { examId: number; onGanti: () => void }) {
+function Papan({
+  examId,
+  onGanti,
+  onTolak,
+}: {
+  examId: number;
+  onGanti: () => void;
+  onTolak: (err: unknown) => boolean;
+}) {
   const [snapshot, setSnapshot] = useState<MonitorSnapshot | null>(null);
   const [error, setError] = useState("");
   const [memuat, setMemuat] = useState(false);
@@ -293,16 +353,17 @@ function Papan({ examId, onGanti }: { examId: number; onGanti: () => void }) {
   const muat = useCallback(async () => {
     setMemuat(true);
     try {
-      const data = await adminApi.monitor(examId);
+      const data = await proctorApi.monitor(examId);
       setSnapshot(data);
       setError("");
       periksaKejadian(data.events || []);
     } catch (err) {
+      if (onTolak(err)) return;
       setError(err instanceof ApiError ? err.message : "Gagal memperbarui papan pantau.");
     } finally {
       setMemuat(false);
     }
-  }, [examId, periksaKejadian]);
+  }, [examId, periksaKejadian, onTolak]);
 
   useEffect(() => {
     void muat();
@@ -436,8 +497,8 @@ function Papan({ examId, onGanti }: { examId: number; onGanti: () => void }) {
 
             {sesi.length === 0 ? (
               <p className="px-4 py-10 text-center text-[12px] leading-relaxed text-muted">
-                Belum ada peserta yang masuk. Bagikan kode <span className="font-mono font-bold">{exam?.code}</span>{" "}
-                dan pastikan ujian sudah dibuka.
+                Belum ada peserta yang masuk. Ingatkan peserta untuk memakai kode{" "}
+                <span className="font-mono font-bold">{exam?.code}</span>.
               </p>
             ) : (
               <ul className="divide-y divide-line">
@@ -605,19 +666,5 @@ function Ringkas({
         <p className="text-[15px] font-extrabold leading-tight tabular-nums text-ink">{value}</p>
       </div>
     </div>
-  );
-}
-
-function StatusBadge({ status }: { status: Exam["status"] }) {
-  const map = {
-    open: { text: "Dibuka", className: "bg-brand text-white" },
-    draft: { text: "Belum dibuka", className: "bg-sand-soft text-[#7a5c05]" },
-    closed: { text: "Ditutup", className: "bg-line text-muted" },
-  } as const;
-  const item = map[status];
-  return (
-    <span className={`rounded-md px-1.5 py-0.5 text-[9.5px] font-extrabold uppercase tracking-wide ${item.className}`}>
-      {item.text}
-    </span>
   );
 }

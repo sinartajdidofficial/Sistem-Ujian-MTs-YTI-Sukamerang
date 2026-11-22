@@ -107,7 +107,7 @@ export default function AdminExamPage() {
           </div>
           <div className="ml-auto flex items-center gap-2">
             <Link
-              to={`/guru/pantau?ujian=${exam.id}`}
+              to="/guru/pantau"
               className="inline-flex items-center gap-1.5 rounded-lg bg-brand-soft px-2.5 py-1.5 text-[11.5px] font-bold text-brand transition hover:bg-brand hover:text-white"
             >
               <Radar size={13} /> <span className="hidden sm:inline">Pantau</span>
