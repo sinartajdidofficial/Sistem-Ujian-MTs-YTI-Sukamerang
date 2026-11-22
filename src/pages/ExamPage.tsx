@@ -575,8 +575,8 @@ export default function ExamPage() {
               {availableTabs.find((tab) => tab.key === activeTab)?.label}
             </span>
             {" · "}
-            {activeTab === "pgk" && session.pgkMax > 0
-              ? `Pilih maksimal ${session.pgkMax} jawaban untuk setiap nomor.`
+            {activeTab === "pgk"
+              ? "Pilih semua jawaban yang benar. Jumlah pilihan tiap nomor sudah dibatasi sesuai kunci."
               : availableTabs.find((tab) => tab.key === activeTab)?.hint}
           </div>
 
@@ -586,7 +586,7 @@ export default function ExamPage() {
               counts={counts}
               answers={answers}
               pgOptions={session.pgOptions || 4}
-              pgkMax={session.pgkMax || 0}
+              pgkLimits={session.pgkLimits || {}}
               matchOptions={session.matchOptions || counts.match}
               essayMax={session.essayMax || 10}
               onChange={onChange}

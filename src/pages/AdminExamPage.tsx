@@ -388,12 +388,10 @@ function KeyTab({ exam, onChange }: { exam: Exam; onChange: () => Promise<void> 
               Isi kunci untuk penilaian otomatis. Nomor tanpa kunci tidak dihitung.
             </p>
             {exam.counts.pgk > 0 && (
-              <p className="mt-1.5 text-[11.5px] text-ink-soft">
-                PG kompleks:{" "}
-                <span className="font-bold">
-                  {exam.pgk_max > 0 ? `peserta maksimal memilih ${exam.pgk_max} jawaban` : "pilihan bebas"}
-                </span>
-                {exam.pgk_max > 0 ? " — pastikan kunci per nomor tidak lebih dari itu." : "."}
+              <p className="mt-1.5 text-[11.5px] leading-relaxed text-ink-soft">
+                PG kompleks: <span className="font-bold">batas pilihan mengikuti kunci</span> — nomor dengan 2
+                jawaban benar hanya bisa dipilih 2, nomor dengan 3 jawaban benar bisa dipilih 3. Tidak ada
+                pengaturan tambahan; cukup isi kuncinya di sini.
               </p>
             )}
           </div>
@@ -954,7 +952,6 @@ function SettingTab({
     duration_minutes: exam.duration_minutes,
     counts: exam.counts,
     pg_options: exam.pg_options,
-    pgk_max: exam.pgk_max || 0,
     match_options: exam.match_options,
     essay_max: exam.essay_max,
     max_violations: exam.max_violations,
