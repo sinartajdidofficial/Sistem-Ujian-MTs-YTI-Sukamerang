@@ -1002,6 +1002,80 @@ app.get("/api/sessions/:id/pdf", loadSession, async (req, res) => {
 
 /* --- admin: results --- */
 
+/**
+ * Papan pantau: keadaan ujian saat ini untuk pengawas — sesi yang sedang berjalan,
+ * jumlah soal terjawab, dan aliran kejadian (pelanggaran, mulai, kumpul).
+ */
+const MONITOR_EVENT_LIMIT = 80;
+
+/** Jumlah butir yang sudah dijawab, dihitung dari jsonb answers. */
+function answeredTotal(answers) {
+  const source = answers && typeof answers === "object" ? answers : {};
+  let total = 0;
+  for (const type of TYPES) {
+    const bucket = source[type];
+    if (!bucket || typeof bucket !== "object") continue;
+    for (const value of Object.values(bucket)) {
+      if (Array.isArray(value)) {
+        if (value.length) total += 1;
+      } else if (String(value ?? "").trim() !== "") {
+        total += 1;
+      }
+    }
+  }
+  return total;
+}
+
+app.get("/api/admin/exams/:id/monitor", requireAdmin, async (req, res) => {
+  const examId = clampInt(req.params.id, 1, 1_000_000, 0);
+  const examRow = await q(`SELECT ${examPublicColumns} FROM exams WHERE id = $1`, [examId]);
+  if (!examRow.rows.length) return res.status(404).json({ error: "Ujian tidak ditemukan." });
+  const exam = examRow.rows[0];
+
+  const sessions = await q(
+    `SELECT id, student_name, student_class, violations, answers, started_at, deadline,
+            submitted_at, auto_submitted, last_seen, graded_at
+     FROM sessions WHERE exam_id = $1 ORDER BY started_at ASC`,
+    [examId]
+  );
+
+  const events = await q(
+    `SELECT e.id, e.type, e.detail, e.at, e.session_id, s.student_name, s.student_class
+     FROM events e JOIN sessions s ON s.id = e.session_id
+     WHERE s.exam_id = $1
+     ORDER BY e.id DESC
+     LIMIT ${MONITOR_EVENT_LIMIT}`,
+    [examId]
+  );
+
+  res.json({
+    exam,
+    now: nowISO(),
+    sessions: sessions.rows.map((row) => ({
+      id: row.id,
+      studentName: row.student_name,
+      studentClass: row.student_class,
+      violations: row.violations || 0,
+      answered: answeredTotal(row.answers),
+      startedAt: row.started_at,
+      deadline: row.deadline,
+      submittedAt: row.submitted_at,
+      autoSubmitted: !!row.auto_submitted,
+      lastSeen: row.last_seen,
+      graded: !!row.graded_at,
+    })),
+    events: events.rows.map((row) => ({
+      id: Number(row.id),
+      type: row.type,
+      detail: row.detail,
+      at: row.at,
+      sessionId: row.session_id,
+      studentName: row.student_name,
+      studentClass: row.student_class,
+    })),
+  });
+});
+
 app.get("/api/admin/exams/:id/sessions", requireAdmin, async (req, res) => {
   const examRow = await q(`SELECT ${examPublicColumns} FROM exams WHERE id = $1`, [req.params.id]);
   if (!examRow.rows.length) return res.status(404).json({ error: "Ujian tidak ditemukan." });
