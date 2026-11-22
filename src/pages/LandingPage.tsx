@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { ChevronDown, GraduationCap, KeyRound, Loader2, LogIn, UserRound, Users } from "lucide-react";
+import { ChevronDown, GraduationCap, KeyRound, Loader2, Lock, LogIn, UserRound, Users } from "lucide-react";
 import { ApiError, studentApi, sessionToken } from "../lib/api";
 import { unlockAudio } from "../lib/alarm";
 import type { ClassRow, StudentRow } from "../lib/types";
@@ -21,6 +21,8 @@ export default function LandingPage() {
   const [loadingStudents, setLoadingStudents] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  /** Ujian terikat pada satu rombel: kelas dikunci sesuai token, siswa tidak bisa memilih kelas lain. */
+  const [lockedClass, setLockedClass] = useState<{ id: number; name: string } | null>(null);
 
   const studentsSeq = useRef(0);
 
@@ -75,6 +77,39 @@ export default function LandingPage() {
         if (seq === studentsSeq.current) setLoadingStudents(false);
       });
   }, [classId]);
+
+  /**
+   * Satu ujian = satu rombel. Begitu token dikenali, kelas dikunci ke rombel ujian itu
+   * supaya siswa tidak salah pilih kelas.
+   */
+  useEffect(() => {
+    const code = token.trim().toUpperCase();
+    if (code.length < 4) {
+      setLockedClass(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      studentApi
+        .examByCode(code)
+        .then(({ exam }) => {
+          if (cancelled) return;
+          if (exam.class_id) {
+            setLockedClass({ id: exam.class_id, name: exam.kelas || "sesuai token" });
+            setClassId(String(exam.class_id));
+          } else {
+            setLockedClass(null);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setLockedClass(null);
+        });
+    }, 400);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [token]);
 
   const ready = !!classId && !!studentId && token.trim().length >= 4;
 
@@ -142,7 +177,7 @@ export default function LandingPage() {
                     setStudentId("");
                     setError("");
                   }}
-                  disabled={loadingClasses}
+                  disabled={loadingClasses || !!lockedClass}
                   className="field appearance-none pr-9 disabled:opacity-60"
                 >
                   <option value="">{loadingClasses ? "Memuat kelas…" : "Pilih kelas"}</option>
@@ -154,6 +189,11 @@ export default function LandingPage() {
                 </select>
                 <ChevronDown size={16} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted" />
               </div>
+              {lockedClass && (
+                <p className="mt-1.5 inline-flex items-center gap-1.5 rounded-lg bg-brand-soft px-2 py-1 text-[11px] font-semibold text-brand">
+                  <Lock size={11} /> Rombel {lockedClass.name} — sesuai token ujian
+                </p>
+              )}
             </div>
 
             <div>
