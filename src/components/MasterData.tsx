@@ -14,6 +14,7 @@ import {
   X,
 } from "lucide-react";
 import { ApiError, adminApi } from "../lib/api";
+import { useConfirm } from "./ConfirmDialog";
 import type { ClassRow, StudentRow, SubjectRow } from "../lib/types";
 
 export type Catalog = { classes: ClassRow[]; subjects: SubjectRow[]; students: StudentRow[] };
@@ -152,9 +153,21 @@ function ClassSection({ catalog, onReload }: Props) {
     }
   };
 
+  const askConfirm = useConfirm();
+
   const remove = async (row: ClassRow) => {
-    if (!window.confirm(`Hapus kelas ${row.name}? ${row.student_count || 0} siswa di kelas ini ikut terhapus.`))
-      return;
+    const ok = await askConfirm({
+      title: `Hapus kelas ${row.name}?`,
+      message: (
+        <>
+          <span className="font-semibold text-ink">{row.student_count || 0} siswa</span> di kelas {row.name} akan
+          ikut terhapus.
+        </>
+      ),
+      note: "Ujian yang memakai kelas ini tidak terhapus — hanya rombelnya yang jadi kosong dan perlu diatur ulang.",
+      confirmLabel: "Hapus kelas",
+    });
+    if (!ok) return;
     try {
       await adminApi.deleteClass(row.id);
       await onReload();
@@ -272,8 +285,16 @@ function SubjectSection({ catalog, onReload }: Props) {
     }
   };
 
+  const askConfirm = useConfirm();
+
   const remove = async (row: SubjectRow) => {
-    if (!window.confirm(`Hapus mapel ${row.name}?`)) return;
+    const ok = await askConfirm({
+      title: `Hapus mapel ${row.name}?`,
+      message: "Mapel ini tidak akan muncul lagi saat membuat ujian baru.",
+      note: "Ujian yang sudah memakai mapel ini tetap ada, tetapi mapelnya perlu dipilih ulang.",
+      confirmLabel: "Hapus mapel",
+    });
+    if (!ok) return;
     try {
       await adminApi.deleteSubject(row.id);
       await onReload();
@@ -422,8 +443,21 @@ function StudentSection({ catalog, onReload }: Props) {
     }
   };
 
+  const askConfirm = useConfirm();
+
   const remove = async (row: StudentRow) => {
-    if (!window.confirm(`Hapus ${row.name} dari daftar siswa?`)) return;
+    const ok = await askConfirm({
+      title: "Hapus siswa dari daftar?",
+      message: (
+        <>
+          <span className="font-semibold text-ink">{row.name}</span> tidak akan muncul lagi di daftar peserta,
+          sehingga tidak bisa mengerjakan ujian.
+        </>
+      ),
+      note: "Jawaban dan nilai yang sudah tersimpan tetap ada di daftar peserta ujian.",
+      confirmLabel: "Hapus siswa",
+    });
+    if (!ok) return;
     try {
       await adminApi.deleteStudent(row.id);
       await onReload();
