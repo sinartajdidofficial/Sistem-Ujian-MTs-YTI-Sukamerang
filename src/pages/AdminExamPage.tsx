@@ -21,6 +21,7 @@ import {
 import { ApiError, adminApi, formatSize } from "../lib/api";
 import type { AnswerKey, ClassRow, Counts, Exam, QuestionType, SubjectRow } from "../lib/types";
 import ExamForm, { type ExamFormValues } from "../components/ExamForm";
+import { useConfirm } from "../components/ConfirmDialog";
 import { Modal } from "./AdminPage";
 
 const LETTERS = ["A", "B", "C", "D", "E"];
@@ -512,6 +513,7 @@ function HasilTab({ exam }: { exam: Exam }) {
   const [rows, setRows] = useState<SessionRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [openSession, setOpenSession] = useState<string | null>(null);
+  const askConfirm = useConfirm();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -540,6 +542,22 @@ function HasilTab({ exam }: { exam: Exam }) {
       benar: values.length,
     };
   }, [rows]);
+
+  const removeSession = async (row: SessionRow) => {
+    const ok = await askConfirm({
+      title: "Hapus jawaban peserta?",
+      message: (
+        <>
+          Jawaban <span className="font-semibold text-ink">{row.studentName}</span> pada ujian {exam.title} akan
+          dihapus dari daftar peserta.
+        </>
+      ),
+      note: "Peserta bisa mengerjakan ulang karena riwayat jawabannya tidak tersimpan lagi.",
+      confirmLabel: "Hapus jawaban",
+    });
+    if (!ok) return;
+    await adminApi.deleteSession(row.id).then(() => load());
+  };
 
   const exportCsv = async () => {
     try {
@@ -657,10 +675,7 @@ function HasilTab({ exam }: { exam: Exam }) {
                       <button
                         type="button"
                         aria-label={`Hapus peserta ${row.studentName}`}
-                        onClick={() => {
-                          if (!window.confirm(`Hapus jawaban ${row.studentName}?`)) return;
-                          void adminApi.deleteSession(row.id).then(() => load());
-                        }}
+                        onClick={() => void removeSession(row)}
                         className="ml-1 rounded-md p-1 text-muted transition hover:bg-danger-soft hover:text-danger"
                       >
                         <Trash2 size={12} />
@@ -722,10 +737,7 @@ function HasilTab({ exam }: { exam: Exam }) {
                   <button
                     type="button"
                     aria-label={`Hapus peserta ${row.studentName}`}
-                    onClick={() => {
-                      if (!window.confirm(`Hapus jawaban ${row.studentName}?`)) return;
-                      void adminApi.deleteSession(row.id).then(() => load());
-                    }}
+                    onClick={() => void removeSession(row)}
                     className="rounded-lg border border-line p-1.5 text-muted active:bg-danger-soft active:text-danger"
                   >
                     <Trash2 size={12} />
@@ -923,6 +935,7 @@ function SettingTab({
   onChange: () => Promise<void>;
 }) {
   const navigate = useNavigate();
+  const askConfirm = useConfirm();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
@@ -960,7 +973,18 @@ function SettingTab({
   };
 
   const destroy = async () => {
-    if (!window.confirm(`Hapus ujian "${exam.title}" beserta seluruh jawaban peserta?`)) return;
+    const ok = await askConfirm({
+      title: "Hapus ujian ini?",
+      message: (
+        <>
+          <span className="font-semibold text-ink">{exam.title}</span>
+          {exam.kelas ? ` · rombel ${exam.kelas}` : ""} beserta seluruh jawaban peserta akan dihapus.
+        </>
+      ),
+      note: "Naskah PDF, kunci jawaban, dan nilai peserta ikut terhapus dan tidak bisa dikembalikan.",
+      confirmLabel: "Hapus ujian",
+    });
+    if (!ok) return;
     try {
       await adminApi.deleteExam(exam.id);
       navigate("/guru", { replace: true });

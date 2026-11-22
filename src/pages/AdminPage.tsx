@@ -24,6 +24,7 @@ import { ApiError, adminApi, adminToken } from "../lib/api";
 import type { Exam } from "../lib/types";
 import ExamForm, { defaultExamForm, type ExamFormValues } from "../components/ExamForm";
 import MasterData, { type Catalog } from "../components/MasterData";
+import { useConfirm } from "../components/ConfirmDialog";
 
 const totalQ = (counts: Exam["counts"]) =>
   ["pg", "pgk", "bs", "match", "essay"].reduce(
@@ -47,6 +48,7 @@ const emptyCatalog: Catalog = { classes: [], subjects: [], students: [] };
 
 export default function AdminPage() {
   const navigate = useNavigate();
+  const askConfirm = useConfirm();
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [password, setPassword] = useState("");
   const [loginBusy, setLoginBusy] = useState(false);
@@ -139,7 +141,19 @@ export default function AdminPage() {
   };
 
   const removeExam = async (exam: Exam) => {
-    if (!window.confirm(`Hapus ujian "${exam.title}"? Jawaban siswa pada ujian ini ikut terhapus.`)) return;
+    const ok = await askConfirm({
+      title: "Hapus ujian ini?",
+      message: (
+        <>
+          <span className="font-semibold text-ink">{exam.title}</span>
+          {exam.kelas ? ` · rombel ${exam.kelas}` : ""} beserta{" "}
+          {exam.session_count ?? 0} jawaban peserta akan dihapus.
+        </>
+      ),
+      note: "Naskah PDF, kunci jawaban, dan nilai peserta ikut terhapus dan tidak bisa dikembalikan.",
+      confirmLabel: "Hapus ujian",
+    });
+    if (!ok) return;
     setExams((rows) => rows.filter((row) => row.id !== exam.id));
     try {
       await adminApi.deleteExam(exam.id);
