@@ -9,7 +9,6 @@ export type ExamFormValues = {
   duration_minutes: number;
   counts: Counts;
   pg_options: number;
-  pgk_max: number;
   match_options: number;
   essay_max: number;
   max_violations: number;
@@ -23,7 +22,6 @@ export const defaultExamForm = (): ExamFormValues => ({
   duration_minutes: 60,
   counts: { pg: 20, pgk: 0, bs: 0, match: 0, essay: 1 },
   pg_options: 4,
-  pgk_max: 0,
   match_options: 5,
   essay_max: 10,
   max_violations: 5,
@@ -269,24 +267,6 @@ export default function ExamForm({
               onChange={(event) => set("match_options", Number(event.target.value))}
               className="field px-2 py-1.5 text-sm"
             />
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-[10.5px] font-bold uppercase tracking-wide text-muted">
-              Batas pilihan PGK
-            </span>
-            <select
-              id="f-pgk-max"
-              value={values.pgk_max}
-              onChange={(event) => set("pgk_max", Number(event.target.value))}
-              className="field px-2 py-1.5 text-sm"
-            >
-              <option value={0}>Bebas</option>
-              {[2, 3, 4, 5].map((n) => (
-                <option key={n} value={n}>
-                  Maks. {n} jawaban
-                </option>
-              ))}
-            </select>
           </label>
           <label className="block">
             <span className="mb-1 block text-[10.5px] font-bold uppercase tracking-wide text-muted">

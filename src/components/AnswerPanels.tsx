@@ -16,8 +16,8 @@ type PanelProps = {
   counts: Counts;
   answers: Answers;
   pgOptions: number;
-  /** 0 = bebas, >0 = jumlah pilihan maksimal untuk PG kompleks */
-  pgkMax: number;
+  /** batas pilihan per nomor untuk PG kompleks — diambil dari kunci jawaban */
+  pgkLimits: Record<string, number>;
   matchOptions: number;
   essayMax: number;
   onChange: (type: QuestionType, no: number, value: string | string[]) => void;
@@ -142,15 +142,16 @@ export function PgPanel({ counts, answers, pgOptions, onChange, onClear }: Panel
   );
 }
 
-export function PgkPanel({ counts, answers, pgOptions, pgkMax, onChange, onClear }: PanelProps) {
+export function PgkPanel({ counts, answers, pgOptions, pgkLimits, onChange, onClear }: PanelProps) {
   const letters = LETTERS.slice(0, pgOptions || 4);
-  const limit = pgkMax > 0 ? Math.min(pgkMax, letters.length) : 0;
 
   return (
     <div className="space-y-1.5">
       {Array.from({ length: counts.pgk }, (_, index) => {
         const no = index + 1;
         const selected = answers.pgk[String(no)] || [];
+        // batas per nomor mengikuti kunci: 2 kunci → 2 pilihan, 3 kunci → 3
+        const limit = Math.min(pgkLimits[String(no)] || 0, letters.length);
         const full = limit > 0 && selected.length >= limit;
         return (
           <Row key={no} no={no} filled={selected.length > 0} onClear={() => onClear("pgk", no)}>
