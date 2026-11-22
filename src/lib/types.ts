@@ -127,11 +127,27 @@ export type MonitorEvent = {
   studentClass: string;
 };
 
+/** Ujian di papan pantau — sengaja tanpa kunci jawaban, dibaca juga oleh pengawas. */
+export type MonitorExam = Omit<Exam, "answer_key">;
+
 export type MonitorSnapshot = {
-  exam: Exam;
+  exam: MonitorExam;
   sessions: MonitorSession[];
   events: MonitorEvent[];
   now: string;
+};
+
+/** Ringkasan ujian di daftar pilih-ujian milik pengawas. */
+export type ProctorExam = {
+  id: number;
+  code: string;
+  title: string;
+  subject: string;
+  kelas: string;
+  duration_minutes: number;
+  status: "draft" | "open" | "closed";
+  session_count: number;
+  submitted_count: number;
 };
 
 export const emptyAnswers = (): Answers => ({ pg: {}, pgk: {}, bs: {}, match: {}, essay: {} });

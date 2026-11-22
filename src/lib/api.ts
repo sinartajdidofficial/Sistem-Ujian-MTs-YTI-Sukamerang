@@ -4,6 +4,7 @@ import type {
   Exam,
   ExamPublic,
   MonitorSnapshot,
+  ProctorExam,
   ScoreDetail,
   Session,
   StudentRow,
@@ -11,6 +12,7 @@ import type {
 } from "./types";
 
 const ADMIN_KEY = "mts-yti-admin-token";
+const PROCTOR_KEY = "mts-yti-proctor-key";
 export const SESSION_KEY_PREFIX = "mts-yti-session:";
 
 export const adminToken = {
@@ -18,6 +20,56 @@ export const adminToken = {
   set: (token: string) => localStorage.setItem(ADMIN_KEY, token),
   clear: () => localStorage.removeItem(ADMIN_KEY),
 };
+
+/**
+ * Kunci pengawas datang dari tautan yang dibagikan guru: /pantau#k=KUNCI.
+ * Dibaca dari hash (tidak ikut terkirim ke server log), lalu disimpan supaya
+ * halaman tetap hidup saat di-refresh. Halaman pengawas tidak pernah memakai
+ * token guru.
+ */
+export const proctorKey = {
+  readFromUrl: (): string => {
+    if (typeof window === "undefined") return proctorKey.get();
+    const hash = window.location.hash.replace(/^#/, "");
+    const fromHash = new URLSearchParams(hash).get("k") || "";
+    const fromQuery = new URLSearchParams(window.location.search).get("k") || "";
+    const found = (fromHash || fromQuery).trim().toLowerCase();
+    if (found) proctorKey.set(found);
+    return found || proctorKey.get();
+  },
+  get: () => {
+    try {
+      return localStorage.getItem(PROCTOR_KEY) || "";
+    } catch {
+      return "";
+    }
+  },
+  set: (key: string) => {
+    try {
+      localStorage.setItem(PROCTOR_KEY, key.trim().toLowerCase());
+    } catch {
+      /* mode privat bisa menolak localStorage — tautan di URL tetap dipakai */
+    }
+  },
+  clear: () => {
+    try {
+      localStorage.removeItem(PROCTOR_KEY);
+    } catch {
+      /* abaikan */
+    }
+  },
+};
+
+/**
+ * Satu tautan untuk semua ujian: /pantau#k=KUNCI.
+ * Dari situ pengawas memilih sendiri ujian mana yang mau dipantau.
+ */
+export function proctorUrl(key: string): string {
+  const origin = typeof window === "undefined" ? "" : window.location.origin;
+  const hash = new URLSearchParams();
+  hash.set("k", key);
+  return `${origin}/pantau#${hash.toString()}`;
+}
 
 export const sessionToken = {
   get: (sessionId: string) => localStorage.getItem(SESSION_KEY_PREFIX + sessionId) || "",
@@ -39,6 +91,7 @@ type FetchOptions = {
   method?: string;
   body?: unknown;
   admin?: boolean;
+  proctor?: boolean;
   session?: { id: string; token: string };
 };
 
@@ -46,6 +99,7 @@ async function request<T>(path: string, options: FetchOptions = {}): Promise<T> 
   const headers: Record<string, string> = {};
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
   if (options.admin) headers["x-admin-token"] = adminToken.get();
+  if (options.proctor) headers["x-proctor-key"] = proctorKey.get();
   if (options.session) headers["x-session-token"] = options.session.token;
 
   let response: Response;
@@ -86,6 +140,10 @@ export const adminApi = {
   changePassword: (current: string, next: string) =>
     request<{ ok: boolean }>("/api/admin/password", { body: { current, next }, admin: true }),
   logout: () => request<{ ok: boolean }>("/api/admin/logout", { method: "POST", admin: true }),
+  /** Kunci tautan pengawas (hanya guru yang boleh tahu). */
+  getProctorKey: () => request<{ key: string }>("/api/admin/proctor-key", { admin: true }),
+  rotateProctorKey: () =>
+    request<{ key: string }>("/api/admin/proctor-key/rotate", { method: "POST", admin: true }),
   exams: () => request<{ exams: Exam[] }>("/api/admin/exams", { admin: true }),
   exam: (id: number) => request<{ exam: Exam }>(`/api/admin/exams/${id}`, { admin: true }),
   createExam: (body: Record<string, unknown>) =>
@@ -223,6 +281,18 @@ export const adminApi = {
       body: { scores },
       admin: true,
     }),
+};
+
+/* ---------------------------------------------------------------- pengawas */
+
+/**
+ * Semua isi halaman pengawas. Hanya butuh kunci dari tautan — tidak ada sesi
+ * guru, tidak ada halaman admin yang bisa dibuka dari sini.
+ */
+export const proctorApi = {
+  exams: () => request<{ exams: ProctorExam[] }>("/api/proctor/exams", { proctor: true }),
+  monitor: (id: number) =>
+    request<MonitorSnapshot>(`/api/proctor/exams/${id}/monitor`, { proctor: true }),
 };
 
 /* ---------------------------------------------------------------- student */
