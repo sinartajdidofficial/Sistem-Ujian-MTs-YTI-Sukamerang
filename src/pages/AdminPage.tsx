@@ -243,11 +243,6 @@ export default function AdminPage() {
               {loginBusy ? <Loader2 size={15} className="animate-spin" /> : <ShieldCheck size={15} />}
               Masuk
             </button>
-
-            <p className="mt-4 rounded-lg bg-paper px-3 py-2 text-[11px] leading-relaxed text-muted">
-              Kata sandi bawaan: <span className="font-mono font-bold text-ink">MTsYTI2026</span>. Segera ganti
-              setelah masuk pertama kali.
-            </p>
           </div>
 
           <div className="mt-4 text-center">
