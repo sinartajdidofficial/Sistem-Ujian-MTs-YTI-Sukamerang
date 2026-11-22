@@ -365,6 +365,9 @@ app.post("/api/admin/exams", requireAdmin, async (req, res) => {
   const counts = cleanCounts(body.counts);
   const matchOptions = clampInt(body.match_options, 2, 26, counts.match || 4);
   const { subject, kelas, subjectId, classId } = await resolveCatalog(body);
+  if (!classId) {
+    return res.status(400).json({ error: "Pilih kelas (rombel) untuk ujian ini — satu ujian untuk satu rombel." });
+  }
   let code = "";
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const candidate = examCode();
@@ -767,7 +770,7 @@ app.get("/api/admin/exams/:id/pdf", requireAdmin, async (req, res) => {
 
 app.get("/api/exams/:code", async (req, res) => {
   const result = await q(
-    `SELECT id, code, title, subject, kelas, duration_minutes, status, counts, match_options, pg_options, pgk_max,
+    `SELECT id, code, title, subject, kelas, class_id, duration_minutes, status, counts, match_options, pg_options, pgk_max,
             essay_max, max_violations, instructions, pdf_name, pdf_size, pdf_updated_at
      FROM exams WHERE upper(code) = upper($1)`,
     [req.params.code]
