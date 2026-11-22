@@ -30,6 +30,12 @@ export const defaultExamForm = (): ExamFormValues => ({
   instructions: "",
 });
 
+/** Nama ujian untuk asesmen sumatif: hanya dua periode ini yang dipakai madrasah. */
+const EXAM_NAMES: { value: string; hint: string }[] = [
+  { value: "ASAS Ganjil", hint: "Asesmen Sumatif Akhir Semester Ganjil" },
+  { value: "ASAT Genap", hint: "Asesmen Sumatif Akhir Tahun (Semester Genap)" },
+];
+
 const TYPE_LABELS: { key: QuestionType; label: string }[] = [
   { key: "pg", label: "Pilihan ganda" },
   { key: "pgk", label: "PG kompleks" },
@@ -60,6 +66,24 @@ export default function ExamForm({
 
   const total = TYPE_LABELS.reduce((sum, item) => sum + (values.counts[item.key] || 0), 0);
 
+  /** Judul lama (mis. dari ujian yang sudah ada) tetap ditampilkan supaya tidak berubah sendiri. */
+  const nameOptions = EXAM_NAMES.some((item) => item.value === values.title) || !values.title.trim()
+    ? EXAM_NAMES
+    : [...EXAM_NAMES, { value: values.title, hint: "Nama yang sudah tersimpan di ujian ini" }];
+
+  const activeNameHint = EXAM_NAMES.find((item) => item.value === values.title)?.hint || "";
+
+  /** 8A dan 8B satu jenjang (kelas 8) — dikelompokkan supaya rombel tidak tertukar. */
+  const classGroups = classes.reduce<{ level: string; rows: ClassRow[] }[]>((groups, row) => {
+    const level = (row.level || row.name.slice(0, 1) || "lain").trim();
+    const found = groups.find((group) => group.level === level);
+    if (found) found.rows.push(row);
+    else groups.push({ level, rows: [row] });
+    return groups;
+  }, []);
+
+  const selectedClass = classes.find((row) => String(row.id) === values.class_id);
+
   return (
     <form
       className="space-y-4"
@@ -71,16 +95,30 @@ export default function ExamForm({
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="sm:col-span-2">
           <label className="mb-1.5 block text-[12px] font-bold text-ink-soft" htmlFor="f-title">
-            Judul ujian
+            Nama ujian
           </label>
-          <input
-            id="f-title"
-            required
-            value={values.title}
-            onChange={(event) => set("title", event.target.value)}
-            placeholder="Contoh: Penilaian Tengah Semester Ganjil"
-            className="field"
-          />
+          <div className="relative">
+            <select
+              id="f-title"
+              required
+              value={values.title}
+              onChange={(event) => set("title", event.target.value)}
+              className="field appearance-none pr-9"
+            >
+              <option value="" disabled>
+                Pilih nama ujian
+              </option>
+              {nameOptions.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.value}
+                </option>
+              ))}
+            </select>
+            <ChevronDown size={15} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted" />
+          </div>
+          <p className="mt-1.5 text-[10.5px] leading-relaxed text-muted">
+            {activeNameHint || "Pilih ASAS untuk semester ganjil atau ASAT untuk semester genap."}
+          </p>
         </div>
         <div>
           <label className="mb-1.5 block text-[12px] font-bold text-ink-soft" htmlFor="f-subject">
@@ -105,24 +143,44 @@ export default function ExamForm({
         </div>
         <div>
           <label className="mb-1.5 block text-[12px] font-bold text-ink-soft" htmlFor="f-kelas">
-            Kelas
+            Kelas (rombel)
           </label>
           <div className="relative">
             <select
               id="f-kelas"
+              required
               value={values.class_id}
               onChange={(event) => set("class_id", event.target.value)}
               className="field appearance-none pr-9"
             >
-              <option value="">{classes.length ? "Semua kelas" : "Belum ada kelas"}</option>
-              {classes.map((row) => (
-                <option key={row.id} value={row.id}>
-                  {row.name}
-                </option>
-              ))}
+              <option value="" disabled>
+                {classes.length ? "Pilih satu rombel" : "Belum ada kelas"}
+              </option>
+              {classGroups.map((group) =>
+                group.rows.length > 1 ? (
+                  <optgroup key={group.level} label={`Jenjang ${group.level}`}>
+                    {group.rows.map((row) => (
+                      <option key={row.id} value={row.id}>
+                        {row.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : (
+                  group.rows.map((row) => (
+                    <option key={row.id} value={row.id}>
+                      {row.name}
+                    </option>
+                  ))
+                )
+              )}
             </select>
             <ChevronDown size={15} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted" />
           </div>
+          <p className="mt-1.5 text-[10.5px] leading-relaxed text-muted">
+            {selectedClass
+              ? `Ujian ini hanya untuk rombel ${selectedClass.name}. Siswa rombel lain tidak bisa memakai token-nya.`
+              : "Satu ujian untuk satu rombel — pilih 8A, 8B, dan seterusnya, bukan seluruh jenjang."}
+          </p>
         </div>
         <div>
           <label className="mb-1.5 block text-[12px] font-bold text-ink-soft" htmlFor="f-duration">
@@ -260,7 +318,11 @@ export default function ExamForm({
         />
       </div>
 
-      <button type="submit" disabled={busy || !values.title.trim()} className="btn-primary w-full">
+      <button
+        type="submit"
+        disabled={busy || !values.title.trim() || !values.class_id}
+        className="btn-primary w-full"
+      >
         {busy && <Loader2 size={15} className="animate-spin" />}
         {submitLabel}
       </button>
