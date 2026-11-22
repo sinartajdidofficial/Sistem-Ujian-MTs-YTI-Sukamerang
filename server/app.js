@@ -245,6 +245,45 @@ async function requireAdmin(req, res, next) {
   next();
 }
 
+/* --- kunci pengawas: tautan siap-pakai, tanpa kata sandi guru --- */
+
+const PROCTOR_KEY_SETTING = "proctor_key";
+
+/**
+ * Kunci pengawas disimpan di tabel settings. Satu kunci untuk seluruh madrasah,
+ * bisa diganti kapan saja oleh guru — tautan lama langsung mati.
+ */
+async function rotateProctorKey() {
+  const key = randomToken(16);
+  await q(
+    `INSERT INTO settings (key, value) VALUES ($1, $2)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+    [PROCTOR_KEY_SETTING, key]
+  );
+  return key;
+}
+
+async function currentProctorKey() {
+  const found = await q("SELECT value FROM settings WHERE key = $1", [PROCTOR_KEY_SETTING]);
+  if (found.rows.length && found.rows[0].value) return found.rows[0].value;
+  return rotateProctorKey();
+}
+
+async function requireProctor(req, res, next) {
+  const given = String(req.get("x-proctor-key") || req.query.k || "").trim().toLowerCase();
+  if (!given) {
+    return res.status(401).json({ error: "Tautan pengawas tidak lengkap. Minta tautan terbaru ke guru." });
+  }
+  const expected = (await currentProctorKey()).toLowerCase();
+  const same =
+    given.length === expected.length &&
+    crypto.timingSafeEqual(Buffer.from(given), Buffer.from(expected));
+  if (!same) {
+    return res.status(403).json({ error: "Tautan pengawas sudah tidak berlaku. Minta tautan terbaru ke guru." });
+  }
+  next();
+}
+
 async function loadSession(req, res, next) {
   const token = req.get("x-session-token") || String(req.query.token || "") || req.body?.token || "";
   const found = await q("SELECT * FROM sessions WHERE id = $1", [req.params.id]);
@@ -301,6 +340,18 @@ app.post("/api/admin/password", requireAdmin, async (req, res) => {
 app.post("/api/admin/logout", requireAdmin, async (req, res) => {
   await q("DELETE FROM admin_sessions WHERE token = $1", [req.get("x-admin-token")]);
   res.json({ ok: true });
+});
+
+/**
+ * Tautan pengawas. Guru mengambil kuncinya di panel, membagikan tautannya, dan
+ * pengawas cukup membuka tautan itu — tidak pernah memegang kata sandi guru.
+ */
+app.get("/api/admin/proctor-key", requireAdmin, async (_req, res) => {
+  res.json({ key: await currentProctorKey() });
+});
+
+app.post("/api/admin/proctor-key/rotate", requireAdmin, async (_req, res) => {
+  res.json({ key: await rotateProctorKey() });
 });
 
 /* --- admin exams --- */
@@ -1026,11 +1077,14 @@ function answeredTotal(answers) {
   return total;
 }
 
-app.get("/api/admin/exams/:id/monitor", requireAdmin, async (req, res) => {
-  const examId = clampInt(req.params.id, 1, 1_000_000, 0);
+/**
+ * Satu sumber data untuk papan pantau. Dipakai panel guru dan halaman pengawas,
+ * jadi isinya harus aman untuk keduanya: kunci jawaban tidak pernah ikut.
+ */
+async function monitorSnapshot(examId) {
   const examRow = await q(`SELECT ${examPublicColumns} FROM exams WHERE id = $1`, [examId]);
-  if (!examRow.rows.length) return res.status(404).json({ error: "Ujian tidak ditemukan." });
-  const exam = examRow.rows[0];
+  if (!examRow.rows.length) return null;
+  const { answer_key: _answerKey, ...exam } = examRow.rows[0];
 
   const sessions = await q(
     `SELECT id, student_name, student_class, violations, answers, started_at, deadline,
@@ -1048,7 +1102,7 @@ app.get("/api/admin/exams/:id/monitor", requireAdmin, async (req, res) => {
     [examId]
   );
 
-  res.json({
+  return {
     exam,
     now: nowISO(),
     sessions: sessions.rows.map((row) => ({
@@ -1073,7 +1127,33 @@ app.get("/api/admin/exams/:id/monitor", requireAdmin, async (req, res) => {
       studentName: row.student_name,
       studentClass: row.student_class,
     })),
-  });
+  };
+}
+
+app.get("/api/admin/exams/:id/monitor", requireAdmin, async (req, res) => {
+  const snapshot = await monitorSnapshot(clampInt(req.params.id, 1, 1_000_000, 0));
+  if (!snapshot) return res.status(404).json({ error: "Ujian tidak ditemukan." });
+  res.json(snapshot);
+});
+
+/* ---- sisi pengawas: hanya baca, tanpa akses ke panel guru ---- */
+
+app.get("/api/proctor/exams", requireProctor, async (_req, res) => {
+  const result = await q(
+    `SELECT e.id, e.code, e.title, e.subject, e.kelas, e.duration_minutes, e.status,
+            (SELECT count(*)::int FROM sessions s WHERE s.exam_id = e.id) AS session_count,
+            (SELECT count(*)::int FROM sessions s WHERE s.exam_id = e.id AND s.submitted_at IS NOT NULL) AS submitted_count
+     FROM exams e
+     WHERE e.status = 'open'
+     ORDER BY e.created_at DESC`
+  );
+  res.json({ exams: result.rows });
+});
+
+app.get("/api/proctor/exams/:id/monitor", requireProctor, async (req, res) => {
+  const snapshot = await monitorSnapshot(clampInt(req.params.id, 1, 1_000_000, 0));
+  if (!snapshot) return res.status(404).json({ error: "Ujian tidak ditemukan." });
+  res.json(snapshot);
 });
 
 app.get("/api/admin/exams/:id/sessions", requireAdmin, async (req, res) => {
