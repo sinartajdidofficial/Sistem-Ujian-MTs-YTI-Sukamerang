@@ -492,7 +492,7 @@ function MiniStat({
   tone?: "default" | "brand";
 }) {
   return (
-    <div className="card flex flex-col items-start gap-1 p-2.5 sm:flex-row sm:items-center sm:gap-2.5 sm:p-3">
+    <div className="card flex flex-col items-center justify-center gap-1 p-2.5 text-center sm:flex-row sm:items-center sm:justify-center sm:gap-2.5 sm:p-3">
       <span
         className={`grid h-7 w-7 shrink-0 place-items-center rounded-md sm:h-9 sm:w-9 ${
           tone === "brand" ? "bg-brand text-white" : "bg-brand-soft text-brand"
@@ -500,7 +500,7 @@ function MiniStat({
       >
         <Icon size={13} />
       </span>
-      <div className="min-w-0">
+      <div className="min-w-0 text-center">
         <p className="text-[9.5px] font-bold uppercase tracking-wide text-muted">{label}</p>
         <p className="text-[15px] font-extrabold leading-tight tabular-nums text-ink">{value}</p>
       </div>
