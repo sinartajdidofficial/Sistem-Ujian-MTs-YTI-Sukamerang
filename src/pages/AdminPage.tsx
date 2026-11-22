@@ -12,6 +12,7 @@ import {
   Loader2,
   LogOut,
   Plus,
+  Radar,
   RefreshCw,
   Settings2,
   ShieldCheck,
@@ -294,6 +295,12 @@ export default function AdminPage() {
             </p>
           </div>
           <div className="ml-auto flex items-center gap-1">
+            <Link
+              to="/guru/pantau"
+              className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-brand-soft px-2.5 text-[11.5px] font-bold text-brand transition hover:bg-brand hover:text-white"
+            >
+              <Radar size={14} /> <span className="hidden sm:inline">Pantau ujian</span>
+            </Link>
             <button
               type="button"
               onClick={() => setShowPassword(true)}
