@@ -1,0 +1,1163 @@
+import express from "express";
+import crypto from "node:crypto";
+import { q, initSchema } from "./db.js";
+
+const app = express();
+
+app.disable("x-powered-by");
+
+/**
+ * Serverless platforms (Vercel) hand us an already-parsed body. Mark it so
+ * express.json / express.raw step aside instead of re-reading a dead stream.
+ */
+app.use((req, _res, next) => {
+  if (req.body !== undefined && req.body !== null && !req._body) req._body = true;
+  next();
+});
+app.use(express.json({ limit: "2mb" }));
+
+const TYPES = ["pg", "pgk", "bs", "match", "essay"];
+const DEFAULT_PASSWORD = process.env.EXAM_ADMIN_PASSWORD || "MTsYTI2026";
+
+/* ------------------------------------------------------------------ utils */
+
+const nowISO = () => new Date().toISOString();
+
+function randomToken(bytes = 24) {
+  return crypto.randomBytes(bytes).toString("hex");
+}
+
+function examCode() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let out = "";
+  for (let i = 0; i < 6; i += 1) {
+    out += alphabet[crypto.randomInt(alphabet.length)];
+  }
+  return out;
+}
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const hash = crypto.scryptSync(password, salt, 64).toString("hex");
+  return `scrypt:${salt}:${hash}`;
+}
+
+function verifyPassword(password, stored) {
+  try {
+    const [scheme, salt, hash] = String(stored).split(":");
+    if (scheme !== "scrypt" || !salt || !hash) return false;
+    const candidate = crypto.scryptSync(password, salt, 64);
+    const expected = Buffer.from(hash, "hex");
+    return candidate.length === expected.length && crypto.timingSafeEqual(candidate, expected);
+  } catch {
+    return false;
+  }
+}
+
+function clampInt(value, min, max, fallback) {
+  const n = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+function cleanCounts(raw) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  const out = {};
+  for (const key of TYPES) out[key] = clampInt(source[key], 0, 200, 0);
+  return out;
+}
+
+function cleanAnswers(raw) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  const out = {};
+  for (const key of TYPES) {
+    const bucket = source[key];
+    if (bucket && typeof bucket === "object" && !Array.isArray(bucket)) {
+      const cleaned = {};
+      for (const [num, value] of Object.entries(bucket)) {
+        const index = Number.parseInt(num, 10);
+        if (!Number.isFinite(index) || index < 1 || index > 200) continue;
+        if (key === "pgk") {
+          const letters = Array.isArray(value) ? value : [];
+          const set = [...new Set(letters.map((l) => String(l).toUpperCase().slice(0, 1)))].filter(
+            (l) => /[A-Z]/.test(l)
+          );
+          if (set.length) cleaned[String(index)] = set.sort();
+        } else if (key === "essay") {
+          const text = String(value ?? "").slice(0, 5000);
+          if (text.trim()) cleaned[String(index)] = text;
+        } else {
+          const letter = String(value ?? "").toUpperCase().slice(0, 1);
+          if (/[A-Z]/.test(letter)) cleaned[String(index)] = letter;
+        }
+      }
+      out[key] = cleaned;
+    } else {
+      out[key] = {};
+    }
+  }
+  return out;
+}
+
+function cleanKey(raw, counts) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  const out = {};
+  for (const key of TYPES) {
+    if (key === "essay") {
+      out.essay = [];
+      continue;
+    }
+    const bucket = source[key];
+    const list = [];
+    const length = counts[key] || 0;
+    for (let i = 0; i < length; i += 1) {
+      const value = Array.isArray(bucket) ? bucket[i] : undefined;
+      if (key === "pgk") {
+        const letters = Array.isArray(value) ? value : [];
+        const set = [...new Set(letters.map((l) => String(l).toUpperCase().slice(0, 1)))]
+          .filter((l) => /[A-Z]/.test(l))
+          .sort();
+        list.push(set.length ? set : null);
+      } else {
+        const letter = String(value ?? "").toUpperCase().slice(0, 1);
+        list.push(/[A-Z]/.test(letter) ? letter : null);
+      }
+    }
+    out[key] = list;
+  }
+  return out;
+}
+
+/* ---------------------------------------------------------------- scoring */
+
+function sectionsOf(counts) {
+  return TYPES.filter((t) => (counts[t] || 0) > 0);
+}
+
+export function computeScore(exam, answers, manualScores) {
+  const counts = exam.counts || {};
+  const key = exam.answer_key || {};
+  const manual = manualScores || {};
+  const detail = { pg: [], pgk: [], bs: [], match: [] };
+  let correct = 0;
+  let total = 0;
+
+  for (const type of ["pg", "pgk", "bs", "match"]) {
+    const keyList = Array.isArray(key[type]) ? key[type] : [];
+    const count = counts[type] || 0;
+    for (let i = 1; i <= count; i += 1) {
+      const expected = keyList[i - 1];
+      const hasKey = type === "pgk" ? Array.isArray(expected) && expected.length > 0 : !!expected;
+      if (!hasKey) continue;
+      total += 1;
+      const given = answers?.[type]?.[String(i)];
+      let ok = false;
+      if (type === "pgk") {
+        const givenSet = Array.isArray(given) ? given : [];
+        ok = givenSet.length === expected.length && expected.every((l) => givenSet.includes(l));
+      } else {
+        ok = given === expected;
+      }
+      if (ok) correct += 1;
+      detail[type].push({ no: i, expected, given: given ?? null, correct: ok });
+    }
+  }
+
+  const essayCount = counts.essay || 0;
+  const essayMax = exam.essay_max || 10;
+  const essayTotal = essayCount * essayMax;
+  let essayEarned = 0;
+  let essayGraded = 0;
+  const essayDetail = [];
+  for (let i = 1; i <= essayCount; i += 1) {
+    const given = manual[String(i)];
+    const graded = typeof given === "number" && Number.isFinite(given);
+    if (graded) {
+      essayGraded += 1;
+      essayEarned += Math.min(essayMax, Math.max(0, given));
+    }
+    essayDetail.push({
+      no: i,
+      answer: answers?.essay?.[String(i)] || "",
+      max: essayMax,
+      score: graded ? Math.min(essayMax, Math.max(0, given)) : null,
+    });
+  }
+
+  /**
+   * Setiap soal bernilai 1 poin — termasuk uraian, yang nilainya diberikan guru
+   * pada skala 0..essay_max lalu diskalakan ke 1 poin.
+   * Nilai = (poin diperoleh ÷ jumlah soal) × 100.
+   */
+  const essayPoints = essayMax > 0 ? essayEarned / essayMax : 0;
+  const graded = essayTotal === 0 || essayGraded === essayCount;
+  const earned = Math.round((correct + essayPoints) * 100) / 100;
+  const possible = total + essayCount;
+  const nilai = graded && possible > 0 ? Math.round((earned / possible) * 10000) / 100 : null;
+
+  return {
+    objectiveCorrect: correct,
+    objectiveTotal: total,
+    essayEarned,
+    essayTotal,
+    essayGraded,
+    essayCount,
+    earned,
+    possible,
+    nilai,
+    graded,
+    detail,
+    essayDetail,
+  };
+}
+
+function withScore(session, exam) {
+  const detail = session.score_detail || computeScore(exam, session.answers, session.manual_scores);
+  return {
+    ...session,
+    score_detail: detail,
+    score: session.score !== null && session.score !== undefined ? Number(session.score) : detail?.nilai ?? null,
+  };
+}
+
+/* ------------------------------------------------------------------- auth */
+
+async function adminPasswordHash() {
+  const found = await q("SELECT value FROM settings WHERE key = 'admin_password_hash'");
+  if (found.rows.length) return found.rows[0].value;
+  const hash = hashPassword(DEFAULT_PASSWORD);
+  await q(
+    "INSERT INTO settings (key, value) VALUES ('admin_password_hash', $1) ON CONFLICT (key) DO NOTHING",
+    [hash]
+  );
+  const again = await q("SELECT value FROM settings WHERE key = 'admin_password_hash'");
+  return again.rows[0]?.value || hash;
+}
+
+async function requireAdmin(req, res, next) {
+  const token = req.get("x-admin-token") || "";
+  if (!token) return res.status(401).json({ error: "Sesi guru tidak ditemukan." });
+  const found = await q(
+    "SELECT token FROM admin_sessions WHERE token = $1 AND created_at > now() - interval '12 hours'",
+    [token]
+  );
+  if (!found.rows.length) return res.status(401).json({ error: "Sesi guru berakhir, silakan masuk lagi." });
+  next();
+}
+
+async function loadSession(req, res, next) {
+  const token = req.get("x-session-token") || String(req.query.token || "") || req.body?.token || "";
+  const found = await q("SELECT * FROM sessions WHERE id = $1", [req.params.id]);
+  if (!found.rows.length) return res.status(404).json({ error: "Sesi ujian tidak ditemukan." });
+  if (found.rows[0].token !== token) return res.status(403).json({ error: "Token sesi tidak cocok." });
+  const exam = await q(
+    "SELECT id, code, title, subject, kelas, duration_minutes, status, counts, answer_key, match_options, pg_options, pgk_max, essay_max, max_violations, instructions, pdf_name, pdf_size, pdf_updated_at FROM exams WHERE id = $1",
+    [found.rows[0].exam_id]
+  );
+  if (!exam.rows.length) return res.status(404).json({ error: "Ujian tidak ditemukan." });
+  req.sessionRow = found.rows[0];
+  req.examRow = exam.rows[0];
+  next();
+}
+
+/* ----------------------------------------------------------------- routes */
+
+app.get("/api/health", async (_req, res) => {
+  try {
+    await q("SELECT 1");
+    res.json({ ok: true, at: nowISO() });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/* --- admin auth --- */
+
+app.post("/api/admin/login", async (req, res) => {
+  const password = String(req.body?.password || "");
+  const stored = await adminPasswordHash();
+  if (!verifyPassword(password, stored)) {
+    return res.status(401).json({ error: "Kata sandi salah." });
+  }
+  const token = randomToken(32);
+  await q("INSERT INTO admin_sessions (token) VALUES ($1)", [token]);
+  await q("DELETE FROM admin_sessions WHERE created_at < now() - interval '2 days'");
+  res.json({ token });
+});
+
+app.get("/api/admin/me", requireAdmin, (_req, res) => res.json({ ok: true }));
+
+app.post("/api/admin/password", requireAdmin, async (req, res) => {
+  const current = String(req.body?.current || "");
+  const next = String(req.body?.next || "");
+  if (next.length < 6) return res.status(400).json({ error: "Kata sandi baru minimal 6 karakter." });
+  const stored = await adminPasswordHash();
+  if (!verifyPassword(current, stored)) return res.status(401).json({ error: "Kata sandi lama salah." });
+  await q("UPDATE settings SET value = $1 WHERE key = 'admin_password_hash'", [hashPassword(next)]);
+  await q("DELETE FROM admin_sessions");
+  res.json({ ok: true });
+});
+
+app.post("/api/admin/logout", requireAdmin, async (req, res) => {
+  await q("DELETE FROM admin_sessions WHERE token = $1", [req.get("x-admin-token")]);
+  res.json({ ok: true });
+});
+
+/* --- admin exams --- */
+
+const examPublicColumns = `id, code, title, subject, kelas, class_id, subject_id, duration_minutes, status, counts,
+  answer_key, match_options, pg_options, pgk_max, essay_max, max_violations, instructions, pdf_name, pdf_size,
+  pdf_updated_at, created_at`;
+
+app.get("/api/admin/exams", requireAdmin, async (_req, res) => {
+  const result = await q(
+    `SELECT e.id, e.code, e.title, e.subject, e.kelas, e.class_id, e.subject_id, e.duration_minutes, e.status, e.counts,
+            e.answer_key, e.match_options, e.pg_options, e.pgk_max, e.essay_max, e.max_violations, e.instructions,
+            e.pdf_name, e.pdf_size, e.pdf_updated_at, e.created_at,
+            (SELECT count(*)::int FROM sessions s WHERE s.exam_id = e.id) AS session_count,
+            (SELECT count(*)::int FROM sessions s WHERE s.exam_id = e.id AND s.submitted_at IS NOT NULL) AS submitted_count
+     FROM exams e ORDER BY e.created_at DESC`
+  );
+  res.json({ exams: result.rows });
+});
+
+/**
+ * Mapel & kelas come from the school's own lists (master data), so an exam is
+ * always tied to a real subject and class. Plain text stays as a fallback.
+ */
+async function resolveCatalog(body, current = {}) {
+  const wantsSubject = body.subject_id !== undefined || body.subject !== undefined;
+  const wantsClass = body.class_id !== undefined || body.kelas !== undefined;
+  let subject = current.subject || "";
+  let kelas = current.kelas || "";
+  let subjectId = current.subject_id ?? null;
+  let classId = current.class_id ?? null;
+
+  if (body.subject_id !== undefined) {
+    subjectId = body.subject_id ? clampInt(body.subject_id, 1, 1_000_000, 0) || null : null;
+    if (subjectId) {
+      const row = await q("SELECT name FROM subjects WHERE id = $1", [subjectId]);
+      if (row.rows.length) subject = row.rows[0].name;
+      else subjectId = null;
+    } else {
+      subject = "";
+    }
+  }
+  if (body.class_id !== undefined) {
+    classId = body.class_id ? clampInt(body.class_id, 1, 1_000_000, 0) || null : null;
+    if (classId) {
+      const row = await q("SELECT name FROM classes WHERE id = $1", [classId]);
+      if (row.rows.length) kelas = row.rows[0].name;
+      else classId = null;
+    } else {
+      kelas = "";
+    }
+  }
+  if (wantsSubject && body.subject_id === undefined) subject = String(body.subject || "").trim().slice(0, 80);
+  if (wantsClass && body.class_id === undefined) kelas = String(body.kelas || "").trim().slice(0, 40);
+  return { subject, kelas, subjectId, classId };
+}
+
+app.post("/api/admin/exams", requireAdmin, async (req, res) => {
+  const body = req.body || {};
+  const title = String(body.title || "").trim().slice(0, 160);
+  if (!title) return res.status(400).json({ error: "Judul ujian wajib diisi." });
+  const counts = cleanCounts(body.counts);
+  const matchOptions = clampInt(body.match_options, 2, 26, counts.match || 4);
+  const { subject, kelas, subjectId, classId } = await resolveCatalog(body);
+  let code = "";
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const candidate = examCode();
+    const exists = await q("SELECT 1 FROM exams WHERE code = $1", [candidate]);
+    if (!exists.rows.length) {
+      code = candidate;
+      break;
+    }
+  }
+  if (!code) code = examCode();
+  const result = await q(
+    `INSERT INTO exams (code, title, subject, kelas, class_id, subject_id, duration_minutes, status, counts,
+       match_options, pg_options, essay_max, max_violations, instructions, pgk_max)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'draft',$8,$9,$10,$11,$12,$13,$14) RETURNING ${examPublicColumns}`,
+    [
+      code,
+      title,
+      subject,
+      kelas,
+      classId,
+      subjectId,
+      clampInt(body.duration_minutes, 5, 300, 60),
+      counts,
+      matchOptions,
+      clampInt(body.pg_options, 2, 5, 4),
+      clampInt(body.essay_max, 1, 100, 10),
+      clampInt(body.max_violations, 1, 20, 5),
+      String(body.instructions || "").slice(0, 2000),
+      clampInt(body.pgk_max, 0, 5, 0),
+    ]
+  );
+  res.status(201).json({ exam: result.rows[0] });
+});
+
+app.get("/api/admin/exams/:id", requireAdmin, async (req, res) => {
+  const result = await q(`SELECT ${examPublicColumns} FROM exams WHERE id = $1`, [req.params.id]);
+  if (!result.rows.length) return res.status(404).json({ error: "Ujian tidak ditemukan." });
+  res.json({ exam: result.rows[0] });
+});
+
+app.patch("/api/admin/exams/:id", requireAdmin, async (req, res) => {
+  const body = req.body || {};
+  const found = await q(`SELECT ${examPublicColumns} FROM exams WHERE id = $1`, [req.params.id]);
+  if (!found.rows.length) return res.status(404).json({ error: "Ujian tidak ditemukan." });
+  const current = found.rows[0];
+  const counts = body.counts ? cleanCounts(body.counts) : current.counts;
+  const status = ["draft", "open", "closed"].includes(body.status) ? body.status : current.status;
+  const answerKey = body.answer_key ? cleanKey(body.answer_key, counts) : cleanKey(current.answer_key, counts);
+  const { subject, kelas, subjectId, classId } = await resolveCatalog(body, current);
+  const result = await q(
+    `UPDATE exams SET title=$1, subject=$2, kelas=$3, duration_minutes=$4, status=$5, counts=$6,
+       answer_key=$7, match_options=$8, essay_max=$9, max_violations=$10, instructions=$11, pg_options=$12,
+       class_id=$13, subject_id=$14, pgk_max=$15
+     WHERE id=$16 RETURNING ${examPublicColumns}`,
+    [
+      body.title !== undefined ? String(body.title).trim().slice(0, 160) || current.title : current.title,
+      subject,
+      kelas,
+      body.duration_minutes !== undefined
+        ? clampInt(body.duration_minutes, 5, 300, current.duration_minutes)
+        : current.duration_minutes,
+      status,
+      counts,
+      answerKey,
+      body.match_options !== undefined
+        ? clampInt(body.match_options, 2, 26, current.match_options)
+        : current.match_options,
+      body.essay_max !== undefined ? clampInt(body.essay_max, 1, 100, current.essay_max) : current.essay_max,
+      body.max_violations !== undefined
+        ? clampInt(body.max_violations, 1, 20, current.max_violations)
+        : current.max_violations,
+      body.instructions !== undefined ? String(body.instructions).slice(0, 2000) : current.instructions,
+      body.pg_options !== undefined ? clampInt(body.pg_options, 2, 5, current.pg_options) : current.pg_options,
+      classId,
+      subjectId,
+      body.pgk_max !== undefined ? clampInt(body.pgk_max, 0, 5, current.pgk_max) : current.pgk_max,
+      req.params.id,
+    ]
+  );
+  res.json({ exam: result.rows[0] });
+});
+
+app.delete("/api/admin/exams/:id", requireAdmin, async (req, res) => {
+  await q("DELETE FROM exams WHERE id = $1", [req.params.id]);
+  res.json({ ok: true });
+});
+
+/* --- master data: kelas, mapel, siswa --- */
+
+const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+app.get(
+  "/api/admin/catalog",
+  requireAdmin,
+  wrap(async (_req, res) => {
+    const classes = await q(
+      `SELECT c.id, c.name, c.level, c.sort,
+              (SELECT count(*)::int FROM students s WHERE s.class_id = c.id AND s.active) AS student_count
+       FROM classes c ORDER BY c.sort, c.name`
+    );
+    const subjects = await q(
+      `SELECT s.id, s.name,
+              (SELECT count(*)::int FROM exams e WHERE e.subject_id = s.id) AS exam_count
+       FROM subjects s ORDER BY s.name`
+    );
+    const students = await q(
+      `SELECT s.id, s.name, s.nis, s.class_id, s.active FROM students s ORDER BY s.name`
+    );
+    res.json({ classes: classes.rows, subjects: subjects.rows, students: students.rows });
+  })
+);
+
+app.post(
+  "/api/admin/classes",
+  requireAdmin,
+  wrap(async (req, res) => {
+    const name = String(req.body?.name || "").trim().slice(0, 40);
+    if (!name) return res.status(400).json({ error: "Nama kelas wajib diisi." });
+    const level = String(req.body?.level || name.slice(0, 1)).trim().slice(0, 10);
+    const exists = await q("SELECT 1 FROM classes WHERE lower(name) = lower($1)", [name]);
+    if (exists.rows.length) return res.status(409).json({ error: "Kelas itu sudah ada." });
+    const row = await q(
+      `INSERT INTO classes (name, level, sort)
+       VALUES ($1,$2,(SELECT COALESCE(MAX(sort),0)+1 FROM classes))
+       RETURNING id, name, level, 0 AS student_count`,
+      [name, level]
+    );
+    res.status(201).json({ class: row.rows[0] });
+  })
+);
+
+app.patch(
+  "/api/admin/classes/:id",
+  requireAdmin,
+  wrap(async (req, res) => {
+    const id = clampInt(req.params.id, 1, 1_000_000, 0);
+    const name = String(req.body?.name || "").trim().slice(0, 40);
+    if (!name) return res.status(400).json({ error: "Nama kelas wajib diisi." });
+    const dup = await q("SELECT 1 FROM classes WHERE lower(name) = lower($1) AND id <> $2", [name, id]);
+    if (dup.rows.length) return res.status(409).json({ error: "Nama kelas itu sudah dipakai." });
+    const row = await q("UPDATE classes SET name = $1 WHERE id = $2 RETURNING id, name, level", [name, id]);
+    if (!row.rows.length) return res.status(404).json({ error: "Kelas tidak ditemukan." });
+    // keep the label on exams in sync
+    await q("UPDATE exams SET kelas = $1 WHERE class_id = $2", [name, id]);
+    res.json({ class: row.rows[0] });
+  })
+);
+
+app.delete(
+  "/api/admin/classes/:id",
+  requireAdmin,
+  wrap(async (req, res) => {
+    const id = clampInt(req.params.id, 1, 1_000_000, 0);
+    await q("DELETE FROM classes WHERE id = $1", [id]);
+    res.json({ ok: true });
+  })
+);
+
+app.post(
+  "/api/admin/subjects",
+  requireAdmin,
+  wrap(async (req, res) => {
+    const name = String(req.body?.name || "").trim().slice(0, 80);
+    if (!name) return res.status(400).json({ error: "Nama mapel wajib diisi." });
+    const exists = await q("SELECT 1 FROM subjects WHERE lower(name) = lower($1)", [name]);
+    if (exists.rows.length) return res.status(409).json({ error: "Mapel itu sudah ada." });
+    const row = await q("INSERT INTO subjects (name) VALUES ($1) RETURNING id, name, 0 AS exam_count", [name]);
+    res.status(201).json({ subject: row.rows[0] });
+  })
+);
+
+app.patch(
+  "/api/admin/subjects/:id",
+  requireAdmin,
+  wrap(async (req, res) => {
+    const id = clampInt(req.params.id, 1, 1_000_000, 0);
+    const name = String(req.body?.name || "").trim().slice(0, 80);
+    if (!name) return res.status(400).json({ error: "Nama mapel wajib diisi." });
+    const dup = await q("SELECT 1 FROM subjects WHERE lower(name) = lower($1) AND id <> $2", [name, id]);
+    if (dup.rows.length) return res.status(409).json({ error: "Nama mapel itu sudah dipakai." });
+    const row = await q("UPDATE subjects SET name = $1 WHERE id = $2 RETURNING id, name", [name, id]);
+    if (!row.rows.length) return res.status(404).json({ error: "Mapel tidak ditemukan." });
+    await q("UPDATE exams SET subject = $1 WHERE subject_id = $2", [name, id]);
+    res.json({ subject: row.rows[0] });
+  })
+);
+
+app.delete(
+  "/api/admin/subjects/:id",
+  requireAdmin,
+  wrap(async (req, res) => {
+    const id = clampInt(req.params.id, 1, 1_000_000, 0);
+    await q("DELETE FROM subjects WHERE id = $1", [id]);
+    res.json({ ok: true });
+  })
+);
+
+app.post(
+  "/api/admin/students",
+  requireAdmin,
+  wrap(async (req, res) => {
+    const classId = clampInt(req.body?.classId, 1, 1_000_000, 0);
+    if (!classId) return res.status(400).json({ error: "Pilih kelas terlebih dahulu." });
+    const kelas = await q("SELECT id FROM classes WHERE id = $1", [classId]);
+    if (!kelas.rows.length) return res.status(404).json({ error: "Kelas tidak ditemukan." });
+
+    const rawNames = Array.isArray(req.body?.names)
+      ? req.body.names
+      : String(req.body?.name || "").split(/\r?\n/);
+    const names = rawNames
+      .map((value) => String(value || "").trim().replace(/\s+/g, " ").slice(0, 80))
+      .filter((value) => value.length >= 2)
+      .slice(0, 200);
+    if (!names.length) return res.status(400).json({ error: "Nama siswa wajib diisi." });
+
+    const nis = String(req.body?.nis || "").trim().slice(0, 30);
+    let added = 0;
+    for (const name of names) {
+      const inserted = await q(
+        "INSERT INTO students (class_id, name, nis) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING id",
+        [classId, name, names.length === 1 ? nis : ""]
+      );
+      added += inserted.rows.length;
+    }
+    res.status(201).json({ added, skipped: names.length - added });
+  })
+);
+
+app.patch(
+  "/api/admin/students/:id",
+  requireAdmin,
+  wrap(async (req, res) => {
+    const id = clampInt(req.params.id, 1, 1_000_000, 0);
+    const found = await q("SELECT * FROM students WHERE id = $1", [id]);
+    if (!found.rows.length) return res.status(404).json({ error: "Siswa tidak ditemukan." });
+    const current = found.rows[0];
+    const name = req.body?.name !== undefined ? String(req.body.name).trim().slice(0, 80) : current.name;
+    if (!name) return res.status(400).json({ error: "Nama siswa wajib diisi." });
+    const classId = req.body?.classId !== undefined ? clampInt(req.body.classId, 1, 1_000_000, current.class_id) : current.class_id;
+    const nis = req.body?.nis !== undefined ? String(req.body.nis).trim().slice(0, 30) : current.nis;
+    const active = req.body?.active !== undefined ? !!req.body.active : current.active;
+    const row = await q(
+      "UPDATE students SET name=$1, class_id=$2, nis=$3, active=$4 WHERE id=$5 RETURNING id, name, nis, class_id, active",
+      [name, classId, nis, active, id]
+    );
+    res.json({ student: row.rows[0] });
+  })
+);
+
+app.delete(
+  "/api/admin/students/:id",
+  requireAdmin,
+  wrap(async (req, res) => {
+    const id = clampInt(req.params.id, 1, 1_000_000, 0);
+    await q("DELETE FROM students WHERE id = $1", [id]);
+    res.json({ ok: true });
+  })
+);
+
+/* --- Supabase Storage (PDF besar, untuk deploy Vercel) --- */
+
+const SUPABASE_URL = (process.env.SUPABASE_URL || "").replace(/\/+$/, "");
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const SUPABASE_BUCKET = process.env.SUPABASE_BUCKET || "exam-files";
+const storageEnabled = !!(SUPABASE_URL && SUPABASE_KEY);
+
+async function storageFetch(path, init = {}) {
+  return fetch(`${SUPABASE_URL}/storage/v1${path}`, {
+    ...init,
+    headers: {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${SUPABASE_KEY}`,
+      ...(init.headers || {}),
+    },
+  });
+}
+
+async function ensureBucket() {
+  const head = await storageFetch(`/bucket/${SUPABASE_BUCKET}`);
+  if (head.ok) return true;
+  const create = await storageFetch("/bucket", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: SUPABASE_BUCKET, name: SUPABASE_BUCKET, public: false }),
+  });
+  return create.ok || create.status === 409;
+}
+
+const absoluteStorageUrl = (url) => (url?.startsWith("http") ? url : `${SUPABASE_URL}/storage/v1${url || ""}`);
+
+const DIRECT_UPLOAD_LIMIT = process.env.VERCEL ? 4 * 1024 * 1024 : 40 * 1024 * 1024;
+
+app.post("/api/admin/exams/:id/pdf/upload-url", requireAdmin, async (req, res) => {
+  if (!storageEnabled) return res.json({ mode: "direct", maxBytes: DIRECT_UPLOAD_LIMIT });
+  const examId = clampInt(req.params.id, 1, 1_000_000, 0);
+  const exists = await q("SELECT 1 FROM exams WHERE id = $1", [examId]);
+  if (!exists.rows.length) return res.status(404).json({ error: "Ujian tidak ditemukan." });
+  try {
+    await ensureBucket();
+    const path = `exam-${examId}/soal-${Date.now()}.pdf`;
+    const created = await storageFetch(`/object/upload/sign/${SUPABASE_BUCKET}/${path}`, { method: "POST" });
+    if (!created.ok) throw new Error(`sign ${created.status}`);
+    const payload = await created.json();
+    res.json({
+      mode: "storage",
+      path,
+      uploadUrl: absoluteStorageUrl(payload.url || payload.signedUrl),
+      maxBytes: 200 * 1024 * 1024,
+    });
+  } catch (err) {
+    console.error("[storage] upload sign failed:", err.message);
+    res.json({ mode: "direct" });
+  }
+});
+
+app.post("/api/admin/exams/:id/pdf/record", requireAdmin, async (req, res) => {
+  const examId = clampInt(req.params.id, 1, 1_000_000, 0);
+  const path = String(req.body?.path || "").slice(0, 300);
+  if (!storageEnabled || !path) return res.status(400).json({ error: "Berkas tidak dikenali." });
+  let name = String(req.body?.name || "soal.pdf").replace(/[\r\n"]/g, "").slice(0, 160) || "soal.pdf";
+  const size = clampInt(req.body?.size, 0, 200 * 1024 * 1024, 0);
+  try {
+    const info = await storageFetch(`/object/info/${SUPABASE_BUCKET}/${path}`);
+    if (!info.ok) return res.status(400).json({ error: "Berkas belum terunggah. Coba lagi." });
+  } catch {
+    return res.status(400).json({ error: "Berkas belum terunggah. Coba lagi." });
+  }
+  const result = await q(
+    `UPDATE exams SET pdf = NULL, pdf_path = $1, pdf_name = $2, pdf_size = $3, pdf_updated_at = now()
+     WHERE id = $4 RETURNING id, pdf_name, pdf_size, pdf_updated_at`,
+    [path, name, size, examId]
+  );
+  if (!result.rows.length) return res.status(404).json({ error: "Ujian tidak ditemukan." });
+  res.json({ exam: result.rows[0] });
+});
+
+/* --- PDF --- */
+
+app.put(
+  "/api/admin/exams/:id/pdf",
+  requireAdmin,
+  express.raw({ type: ["application/pdf", "application/octet-stream"], limit: "40mb" }),
+  async (req, res) => {
+    const buffer = Buffer.isBuffer(req.body) ? req.body : null;
+    if (!buffer || buffer.length < 100) return res.status(400).json({ error: "File PDF tidak terbaca." });
+    const header = buffer.subarray(0, 5).toString("latin1");
+    if (!header.includes("%PDF")) return res.status(400).json({ error: "File harus berformat PDF." });
+    let name = String(req.get("x-file-name") || "soal.pdf");
+    try {
+      name = decodeURIComponent(name);
+    } catch {
+      /* keep the raw value */
+    }
+    name = name.replace(/[\r\n"]/g, "").slice(0, 160) || "soal.pdf";
+    const result = await q(
+      `UPDATE exams SET pdf=$1, pdf_path=NULL, pdf_name=$2, pdf_size=$3, pdf_updated_at=now() WHERE id=$4
+       RETURNING id, pdf_name, pdf_size, pdf_updated_at`,
+      [buffer, name, buffer.length, req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Ujian tidak ditemukan." });
+    res.json({ exam: result.rows[0] });
+  }
+);
+
+async function sendPdf(examId, res) {
+  const result = await q("SELECT pdf, pdf_path, pdf_name, pdf_updated_at FROM exams WHERE id = $1", [examId]);
+  if (!result.rows.length) return res.status(404).json({ error: "PDF soal belum diunggah." });
+  const row = result.rows[0];
+
+  // stored in Supabase Storage: hand the browser a short-lived direct link
+  if (row.pdf_path && storageEnabled) {
+    try {
+      const signed = await storageFetch(`/object/sign/${SUPABASE_BUCKET}/${row.pdf_path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expiresIn: 3600 }),
+      });
+      if (signed.ok) {
+        const payload = await signed.json();
+        res.setHeader("Cache-Control", "no-store");
+        return res.redirect(302, absoluteStorageUrl(payload.signedURL || payload.signedUrl));
+      }
+    } catch (err) {
+      console.error("[storage] sign download failed:", err.message);
+    }
+  }
+
+  if (!row.pdf) return res.status(404).json({ error: "PDF soal belum diunggah." });
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `inline; filename="${(row.pdf_name || "soal.pdf").replace(/"/g, "")}"`);
+  res.setHeader("Cache-Control", "no-store");
+  res.send(row.pdf);
+}
+
+app.get("/api/admin/exams/:id/pdf", requireAdmin, async (req, res) => {
+  await sendPdf(req.params.id, res);
+});
+
+/* --- student: public exam info --- */
+
+app.get("/api/exams/:code", async (req, res) => {
+  const result = await q(
+    `SELECT id, code, title, subject, kelas, duration_minutes, status, counts, match_options, pg_options, pgk_max,
+            essay_max, max_violations, instructions, pdf_name, pdf_size, pdf_updated_at
+     FROM exams WHERE upper(code) = upper($1)`,
+    [req.params.code]
+  );
+  if (!result.rows.length) return res.status(404).json({ error: "Kode ujian tidak ditemukan." });
+  const exam = result.rows[0];
+  res.json({
+    exam: {
+      ...exam,
+      hasPdf: !!exam.pdf_updated_at,
+    },
+  });
+});
+
+/* --- student: sessions --- */
+
+function publicSession(session, exam) {
+  const deadline = new Date(session.deadline).getTime();
+  const detail = session.score_detail || computeScore(exam, session.answers || {}, session.manual_scores);
+  const submitted = !!session.submitted_at;
+  return {
+    id: session.id,
+    token: session.token,
+    examId: session.exam_id,
+    studentName: session.student_name,
+    studentClass: session.student_class,
+    answers: session.answers || {},
+    violations: session.violations || 0,
+    maxViolations: exam.max_violations,
+    startedAt: session.started_at,
+    submittedAt: session.submitted_at,
+    deadline: session.deadline,
+    remainingSeconds: Math.max(0, Math.floor((deadline - Date.now()) / 1000)),
+    submitted,
+    autoSubmitted: !!session.auto_submitted,
+    score: submitted ? detail : null,
+    pdfUpdatedAt: exam.pdf_updated_at,
+    counts: exam.counts,
+    essayMax: exam.essay_max,
+    matchOptions: exam.match_options,
+    pgOptions: exam.pg_options,
+    pgkMax: exam.pgk_max || 0,
+    exam: {
+      id: exam.id,
+      code: exam.code,
+      title: exam.title,
+      subject: exam.subject,
+      kelas: exam.kelas,
+      durationMinutes: exam.duration_minutes,
+      instructions: exam.instructions,
+      maxViolations: exam.max_violations,
+      counts: exam.counts,
+    },
+  };
+}
+
+/** daftar kelas + jumlah siswa, dipakai halaman login peserta */
+app.get("/api/classes", async (_req, res) => {
+  const result = await q(
+    `SELECT c.id, c.name, c.level,
+            (SELECT count(*)::int FROM students s WHERE s.class_id = c.id AND s.active) AS student_count
+     FROM classes c ORDER BY c.sort, c.name`
+  );
+  res.json({ classes: result.rows });
+});
+
+app.get("/api/classes/:id/students", async (req, res) => {
+  const result = await q(
+    "SELECT id, name, nis FROM students WHERE class_id = $1 AND active ORDER BY name",
+    [clampInt(req.params.id, 1, 1_000_000, 0)]
+  );
+  res.json({ students: result.rows });
+});
+
+app.post("/api/exams/:code/sessions", async (req, res) => {
+  const studentId = clampInt(req.body?.studentId, 1, 1_000_000, 0);
+  if (!studentId) return res.status(400).json({ error: "Pilih nama siswa terlebih dahulu." });
+
+  const found = await q("SELECT * FROM exams WHERE upper(code) = upper($1)", [req.params.code]);
+  if (!found.rows.length) return res.status(404).json({ error: "Token ujian tidak ditemukan." });
+  const exam = found.rows[0];
+
+  const studentRow = await q(
+    `SELECT s.id, s.name, s.class_id, c.name AS class_name
+     FROM students s JOIN classes c ON c.id = s.class_id
+     WHERE s.id = $1 AND s.active`,
+    [studentId]
+  );
+  if (!studentRow.rows.length) return res.status(404).json({ error: "Siswa tidak ditemukan." });
+  const student = studentRow.rows[0];
+
+  if (exam.status !== "open") {
+    return res.status(403).json({ error: "Ujian ini belum dibuka atau sudah ditutup oleh guru." });
+  }
+  if (!exam.pdf_updated_at) {
+    return res.status(400).json({ error: "Naskah soal (PDF) belum diunggah oleh guru." });
+  }
+  if (exam.class_id && exam.class_id !== student.class_id) {
+    return res
+      .status(403)
+      .json({ error: `Token ini untuk kelas ${exam.kelas || "lain"}. Kamu terdaftar di kelas ${student.class_name}.` });
+  }
+
+  // one attempt per student: resume the running one, otherwise show the finished one
+  const existing = await q(
+    `SELECT * FROM sessions WHERE exam_id = $1 AND student_id = $2
+     ORDER BY created_at DESC LIMIT 1`,
+    [exam.id, student.id]
+  );
+  if (existing.rows.length) {
+    const row = existing.rows[0];
+    if (!row.submitted_at && new Date(row.deadline).getTime() > Date.now()) {
+      return res.json({ session: publicSession(row, exam), resumed: true });
+    }
+    const finished = row.submitted_at ? row : await finalize(row, exam, true);
+    return res.json({ session: publicSession(finished, exam), alreadySubmitted: true });
+  }
+
+  const deadline = new Date(Date.now() + exam.duration_minutes * 60 * 1000);
+  const created = await q(
+    `INSERT INTO sessions (exam_id, student_id, token, student_name, student_class, deadline, last_seen)
+     VALUES ($1,$2,$3,$4,$5,$6, now()) RETURNING *`,
+    [exam.id, student.id, randomToken(20), student.name, student.class_name, deadline]
+  );
+  await q("INSERT INTO events (session_id, type, detail) VALUES ($1,'start','mulai ujian')", [
+    created.rows[0].id,
+  ]);
+  res.status(201).json({ session: publicSession(created.rows[0], exam) });
+});
+
+app.get("/api/sessions/:id", loadSession, async (req, res) => {
+  const session = req.sessionRow;
+  const exam = req.examRow;
+  let row = session;
+  if (!session.submitted_at && new Date(session.deadline).getTime() <= Date.now()) {
+    row = await finalize(row, exam, true);
+  }
+  await q("UPDATE sessions SET last_seen = now() WHERE id = $1", [session.id]);
+  res.json({ session: publicSession(row, exam) });
+});
+
+async function finalize(session, exam, auto) {
+  const detail = computeScore(exam, session.answers, session.manual_scores);
+  const result = await q(
+    `UPDATE sessions SET submitted_at = COALESCE(submitted_at, now()), auto_submitted = $2,
+       score = $3, score_detail = $4
+     WHERE id = $1 RETURNING *`,
+    [session.id, !!auto, detail.nilai, detail]
+  );
+  if (auto) {
+    await q("INSERT INTO events (session_id, type, detail) VALUES ($1,'auto-submit','waktu habis')", [
+      session.id,
+    ]);
+  }
+  return result.rows[0] || session;
+}
+
+app.put("/api/sessions/:id/answers", loadSession, async (req, res) => {
+  const session = req.sessionRow;
+  if (session.submitted_at) return res.status(409).json({ error: "Ujian sudah dikumpulkan." });
+  if (new Date(session.deadline).getTime() <= Date.now()) {
+    const row = await finalize(session, req.examRow, true);
+    return res.status(409).json({ error: "Waktu ujian habis.", session: publicSession(row, req.examRow) });
+  }
+  const answers = cleanAnswers(req.body?.answers);
+  const pgkLimit = Number(req.examRow?.pgk_max) || 0;
+  if (pgkLimit > 0) {
+    for (const key of Object.keys(answers.pgk || {})) {
+      const picked = answers.pgk[key];
+      if (Array.isArray(picked) && picked.length > pgkLimit) {
+        answers.pgk[key] = picked.slice(0, pgkLimit);
+      }
+    }
+  }
+  const updated = await q(
+    "UPDATE sessions SET answers = $2, last_seen = now() WHERE id = $1 RETURNING *",
+    [session.id, answers]
+  );
+  res.json({ ok: true, savedAt: nowISO(), answers: updated.rows[0].answers });
+});
+
+app.post("/api/sessions/:id/violations", loadSession, async (req, res) => {
+  const session = req.sessionRow;
+  const type = String(req.body?.type || "unknown").slice(0, 40);
+  const detail = String(req.body?.detail || "").slice(0, 200);
+  if (session.submitted_at) return res.json({ violations: session.violations, locked: false, submitted: true });
+  const updated = await q(
+    "UPDATE sessions SET violations = violations + 1 WHERE id = $1 RETURNING violations, submitted_at",
+    [session.id]
+  );
+  await q("INSERT INTO events (session_id, type, detail) VALUES ($1,$2,$3)", [session.id, type, detail]);
+  const violations = updated.rows[0].violations;
+  let locked = false;
+  let submitted = !!updated.rows[0].submitted_at;
+  if (violations > req.examRow.max_violations) {
+    locked = true;
+    const row = updated.rows[0].submitted_at
+      ? session
+      : await finalize(session, req.examRow, true);
+    submitted = true;
+    await q("INSERT INTO events (session_id, type, detail) VALUES ($1,'lock','batas pelanggaran terlampaui')", [
+      session.id,
+    ]);
+    return res.json({ violations, locked, submitted, session: publicSession(row, req.examRow) });
+  }
+  res.json({ violations, locked, submitted, maxViolations: req.examRow.max_violations });
+});
+
+app.post("/api/sessions/:id/submit", loadSession, async (req, res) => {
+  const session = req.sessionRow;
+  if (session.submitted_at) {
+    return res.json({ session: publicSession(withScore(session, req.examRow), req.examRow) });
+  }
+  const answers = req.body?.answers ? cleanAnswers(req.body.answers) : session.answers;
+  const updated = await q("UPDATE sessions SET answers = $2 WHERE id = $1 RETURNING *", [
+    session.id,
+    answers,
+  ]);
+  const row = await finalize({ ...updated.rows[0] }, req.examRow, false);
+  await q("INSERT INTO events (session_id, type, detail) VALUES ($1,'submit','dikumpulkan siswa')", [
+    session.id,
+  ]);
+  res.json({ session: publicSession(row, req.examRow) });
+});
+
+app.get("/api/sessions/:id/pdf", loadSession, async (req, res) => {
+  await sendPdf(req.sessionRow.exam_id, res);
+});
+
+/* --- admin: results --- */
+
+app.get("/api/admin/exams/:id/sessions", requireAdmin, async (req, res) => {
+  const examRow = await q(`SELECT ${examPublicColumns} FROM exams WHERE id = $1`, [req.params.id]);
+  if (!examRow.rows.length) return res.status(404).json({ error: "Ujian tidak ditemukan." });
+  const exam = examRow.rows[0];
+  const rows = await q(
+    `SELECT id, student_name, student_class, violations, started_at, submitted_at, auto_submitted,
+            score, score_detail, manual_scores, deadline
+     FROM sessions WHERE exam_id = $1 ORDER BY submitted_at DESC NULLS LAST, started_at ASC`,
+    [req.params.id]
+  );
+  res.json({
+    exam,
+    sessions: rows.rows.map((row) => {
+      const detail = row.score_detail || computeScore(exam, row.answers || {}, row.manual_scores);
+      return {
+        id: row.id,
+        studentName: row.student_name,
+        studentClass: row.student_class,
+        violations: row.violations,
+        startedAt: row.started_at,
+        submittedAt: row.submitted_at,
+        autoSubmitted: row.auto_submitted,
+        deadline: row.deadline,
+        manualScores: row.manual_scores || {},
+        score: detail,
+      };
+    }),
+  });
+});
+
+app.get("/api/admin/sessions/:id", requireAdmin, async (req, res) => {
+  const found = await q("SELECT * FROM sessions WHERE id = $1", [req.params.id]);
+  if (!found.rows.length) return res.status(404).json({ error: "Sesi tidak ditemukan." });
+  const session = found.rows[0];
+  const examRow = await q(`SELECT ${examPublicColumns} FROM exams WHERE id = $1`, [session.exam_id]);
+  const exam = examRow.rows[0];
+  const events = await q("SELECT type, detail, at FROM events WHERE session_id = $1 ORDER BY at DESC LIMIT 100", [
+    session.id,
+  ]);
+  res.json({
+    exam,
+    session: {
+      id: session.id,
+      studentName: session.student_name,
+      studentClass: session.student_class,
+      answers: session.answers,
+      violations: session.violations,
+      startedAt: session.started_at,
+      submittedAt: session.submitted_at,
+      autoSubmitted: session.auto_submitted,
+      manualScores: session.manual_scores || {},
+      score: computeScore(exam, session.answers || {}, session.manual_scores),
+    },
+    events: events.rows,
+  });
+});
+
+app.post("/api/admin/sessions/:id/grade", requireAdmin, async (req, res) => {
+  const found = await q("SELECT * FROM sessions WHERE id = $1", [req.params.id]);
+  if (!found.rows.length) return res.status(404).json({ error: "Sesi tidak ditemukan." });
+  const session = found.rows[0];
+  const examRow = await q(`SELECT ${examPublicColumns} FROM exams WHERE id = $1`, [session.exam_id]);
+  const exam = examRow.rows[0];
+  const raw = req.body?.scores && typeof req.body.scores === "object" ? req.body.scores : {};
+  const scores = {};
+  for (const [num, value] of Object.entries(raw)) {
+    const index = Number.parseInt(num, 10);
+    const score = Number(value);
+    if (!Number.isFinite(index) || index < 1 || index > (exam.counts.essay || 0)) continue;
+    if (!Number.isFinite(score)) continue;
+    scores[String(index)] = Math.min(exam.essay_max, Math.max(0, Math.round(score * 100) / 100));
+  }
+  const detail = computeScore(exam, session.answers || {}, scores);
+  const updated = await q(
+    `UPDATE sessions SET manual_scores = $2, score_detail = $3, score = $4, graded_at = now()
+     WHERE id = $1 RETURNING *`,
+    [session.id, scores, detail, detail.nilai]
+  );
+  res.json({ session: { ...updated.rows[0], score: detail } });
+});
+
+app.delete("/api/admin/sessions/:id", requireAdmin, async (req, res) => {
+  await q("DELETE FROM sessions WHERE id = $1", [req.params.id]);
+  res.json({ ok: true });
+});
+
+app.get("/api/admin/exams/:id/export.csv", requireAdmin, async (req, res) => {
+  const examRow = await q(`SELECT ${examPublicColumns} FROM exams WHERE id = $1`, [req.params.id]);
+  if (!examRow.rows.length) return res.status(404).json({ error: "Ujian tidak ditemukan." });
+  const rows = await q(
+    "SELECT * FROM sessions WHERE exam_id = $1 ORDER BY student_class ASC, student_name ASC",
+    [req.params.id]
+  );
+  const exam = examRow.rows[0];
+  const header = [
+    "Nama",
+    "Kelas",
+    "Mulai",
+    "Dikumpulkan",
+    "Benar Objektif",
+    "Total Objektif",
+    "Nilai Uraian",
+    "Total Uraian",
+    "Nilai Akhir",
+    "Pelanggaran",
+    "Status",
+  ];
+  const lines = [header.join(",")];
+  for (const row of rows.rows) {
+    const detail = computeScore(exam, row.answers || {}, row.manual_scores);
+    const cells = [
+      row.student_name,
+      row.student_class,
+      row.started_at ? new Date(row.started_at).toLocaleString("id-ID") : "",
+      row.submitted_at ? new Date(row.submitted_at).toLocaleString("id-ID") : "",
+      String(detail.objectiveCorrect),
+      String(detail.objectiveTotal),
+      String(detail.essayEarned),
+      String(detail.essayTotal),
+      detail.nilai === null ? "" : String(detail.nilai),
+      String(row.violations),
+      row.submitted_at ? (row.auto_submitted ? "Otomatis" : "Dikumpulkan") : "Berlangsung",
+    ];
+    lines.push(cells.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","));
+  }
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="nilai-${exam.code}.csv"`);
+  res.send("\ufeff" + lines.join("\r\n"));
+});
+
+/* --- sweep expired sessions --- */
+
+const sweep = async () => {
+  try {
+    const expired = await q(
+      `SELECT s.* FROM sessions s WHERE s.submitted_at IS NULL AND s.deadline <= now() LIMIT 25`
+    );
+    for (const row of expired.rows) {
+      const examRow = await q("SELECT * FROM exams WHERE id = $1", [row.exam_id]);
+      if (examRow.rows.length) await finalize(row, examRow.rows[0], true);
+    }
+  } catch (err) {
+    console.error("[sweep]", err.message);
+  }
+};
+
+if (!process.env.VERCEL) {
+  setInterval(sweep, 60_000).unref?.();
+}
+
+app.use("/api", (_req, res) => res.status(404).json({ error: "Endpoint tidak ditemukan." }));
+
+app.use((err, _req, res, _next) => {
+  console.error("[api error]", err);
+  if (err?.type === "entity.too.large") {
+    return res.status(413).json({ error: "File terlalu besar (maksimal 40 MB)." });
+  }
+  res.status(500).json({ error: "Terjadi kesalahan di server." });
+});
+
+export default app;
+export { initSchema };
