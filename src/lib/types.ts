@@ -34,7 +34,6 @@ export type Exam = {
   answer_key: AnswerKey;
   match_options: number;
   pg_options: number;
-  pgk_max: number;
   essay_max: number;
   max_violations: number;
   instructions: string;
@@ -86,8 +85,12 @@ export type Session = {
   essayMax: number;
   matchOptions: number;
   pgOptions: number;
-  /** 0 = bebas, >0 = jumlah pilihan maksimal untuk soal PG kompleks */
-  pgkMax: number;
+  /**
+   * Batas pilihan per nomor untuk soal PG kompleks, dihitung server dari kunci
+   * jawaban: 2 jawaban benar → maksimal 2 pilihan, 3 → 3. Nomor tanpa kunci
+   * tidak dibatasi (tidak muncul di objek ini).
+   */
+  pgkLimits: Record<string, number>;
   exam?: {
     id: number;
     code: string;
