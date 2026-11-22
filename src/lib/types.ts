@@ -101,8 +101,40 @@ export type Session = {
   };
 };
 
-export const emptyAnswers = (): Answers => ({ pg: {}, pgk: {}, bs: {}, match: {}, essay: {} });
+/* ------------------------------------------------------------ papan pantau (live) */
 
+export type MonitorSession = {
+  id: string;
+  studentName: string;
+  studentClass: string;
+  violations: number;
+  answered: number;
+  startedAt: string;
+  deadline: string;
+  submittedAt: string | null;
+  autoSubmitted: boolean;
+  lastSeen: string | null;
+  graded: boolean;
+};
+
+export type MonitorEvent = {
+  id: number;
+  type: string;
+  detail: string | null;
+  at: string;
+  sessionId: string;
+  studentName: string;
+  studentClass: string;
+};
+
+export type MonitorSnapshot = {
+  exam: Exam;
+  sessions: MonitorSession[];
+  events: MonitorEvent[];
+  now: string;
+};
+
+export const emptyAnswers = (): Answers => ({ pg: {}, pgk: {}, bs: {}, match: {}, essay: {} });
 /** server payloads can omit a type entirely — always hand the UI a full shape */
 export function normalizeAnswers(raw: unknown): Answers {
   const source = (raw && typeof raw === "object" ? raw : {}) as Partial<Answers>;

@@ -1,4 +1,14 @@
-import type { Answers, ClassRow, Exam, ExamPublic, ScoreDetail, Session, StudentRow, SubjectRow } from "./types";
+import type {
+  Answers,
+  ClassRow,
+  Exam,
+  ExamPublic,
+  MonitorSnapshot,
+  ScoreDetail,
+  Session,
+  StudentRow,
+  SubjectRow,
+} from "./types";
 
 const ADMIN_KEY = "mts-yti-admin-token";
 export const SESSION_KEY_PREFIX = "mts-yti-session:";
@@ -84,6 +94,8 @@ export const adminApi = {
     request<{ exam: Exam }>(`/api/admin/exams/${id}`, { method: "PATCH", body, admin: true }),
   deleteExam: (id: number) =>
     request<{ ok: boolean }>(`/api/admin/exams/${id}`, { method: "DELETE", admin: true }),
+  /** Papan pantau: sesi berjalan + aliran kejadian, dipanggil berkala oleh pengawas. */
+  monitor: (id: number) => request<MonitorSnapshot>(`/api/admin/exams/${id}/monitor`, { admin: true }),
   /**
    * With Supabase Storage configured the browser uploads straight to the bucket
    * (no size limit worth worrying about); otherwise the file goes through our

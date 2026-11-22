@@ -103,6 +103,31 @@ export function stopAlarm() {
   activeNodes = null;
 }
 
+/**
+ * Nada pendek dua ketuk untuk notifikasi pengawas — jauh lebih tenang daripada
+ * sirine peserta, cukup untuk menarik perhatian di ruang guru.
+ */
+export function playNotify() {
+  const ctx = getContext();
+  if (!ctx) return;
+  if (ctx.state === "suspended") void ctx.resume();
+
+  const start = ctx.currentTime + 0.02;
+  [0, 0.22].forEach((offset, index) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    const at = start + offset;
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(index === 0 ? 880 : 1180, at);
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(0.16, at + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.16);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(at);
+    osc.stop(at + 0.18);
+  });
+}
+
 /** Best effort: clear whatever the OS clipboard captured on a screenshot attempt. */
 export function wipeClipboard() {
   try {
