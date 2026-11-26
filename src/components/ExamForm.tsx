@@ -8,9 +8,10 @@ export type ExamFormValues = {
   class_id: string;
   duration_minutes: number;
   counts: Counts;
+  /** poin per tipe soal */
+  points: Counts;
   pg_options: number;
   match_options: number;
-  essay_max: number;
   max_violations: number;
   instructions: string;
 };
@@ -21,9 +22,9 @@ export const defaultExamForm = (): ExamFormValues => ({
   class_id: "",
   duration_minutes: 60,
   counts: { pg: 20, pgk: 0, bs: 0, match: 0, essay: 1 },
+  points: { pg: 1, pgk: 1, bs: 1, match: 1, essay: 10 },
   pg_options: 4,
   match_options: 5,
-  essay_max: 10,
   max_violations: 5,
   instructions: "",
 });
@@ -63,6 +64,12 @@ export default function ExamForm({
     setValues((current) => ({ ...current, [key]: value }));
 
   const total = TYPE_LABELS.reduce((sum, item) => sum + (values.counts[item.key] || 0), 0);
+
+  /** total poin maksimal = jumlah soal tiap tipe × poin tiap tipe */
+  const totalPoints = TYPE_LABELS.reduce(
+    (sum, item) => sum + (values.counts[item.key] || 0) * (values.points[item.key] || 0),
+    0
+  );
 
   /** Judul lama (mis. dari ujian yang sudah ada) tetap ditampilkan supaya tidak berubah sendiri. */
   const nameOptions = EXAM_NAMES.some((item) => item.value === values.title) || !values.title.trim()
@@ -238,7 +245,45 @@ export default function ExamForm({
           ))}
         </div>
 
-        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+        <div className="mt-3 border-t border-line pt-3">
+          <div className="mb-2 flex items-center justify-between">
+            <p className="text-[12px] font-extrabold text-ink">Poin per soal per tipe</p>
+            <span className="rounded-md bg-white px-2 py-0.5 text-[11px] font-bold text-brand ring-1 ring-line">
+              total {totalPoints} poin
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+            {TYPE_LABELS.map((item) => (
+              <label key={item.key} className="block">
+                <span className="mb-1 block text-[10.5px] font-bold uppercase tracking-wide text-muted">
+                  {item.label}
+                </span>
+                <input
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={values.points[item.key]}
+                  onChange={(event) => {
+                    const next = Math.min(100, Math.max(1, Math.round(Number(event.target.value) || 1)));
+                    set("points", { ...values.points, [item.key]: next });
+                  }}
+                  className="field px-2 py-1.5 text-sm"
+                  aria-label={`Poin per soal ${item.label}`}
+                />
+              </label>
+            ))}
+          </div>
+          <p className="mt-1.5 text-[10.5px] leading-relaxed text-muted">
+            Nilai akhir = poin yang diperoleh ÷ total poin × 100.{" "}
+            {totalPoints > 0
+              ? `Contoh: dari ${totalPoints} poin, peserta meraih ${Math.round(totalPoints * 0.75)} poin → nilai 75.`
+              : ""}{" "}
+            Soal yang belum diisi kuncinya tidak ikut dihitung. Untuk PG kompleks, poin tiap nomor dibagi rata
+            ke jawaban benarnya.
+          </p>
+        </div>
+
+        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-2">
           <label className="block">
             <span className="mb-1 block text-[10.5px] font-bold uppercase tracking-wide text-muted">
               Opsi PG (A–…)
@@ -265,19 +310,6 @@ export default function ExamForm({
               max={15}
               value={values.match_options}
               onChange={(event) => set("match_options", Number(event.target.value))}
-              className="field px-2 py-1.5 text-sm"
-            />
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-[10.5px] font-bold uppercase tracking-wide text-muted">
-              Poin maks. uraian
-            </span>
-            <input
-              type="number"
-              min={1}
-              max={100}
-              value={values.essay_max}
-              onChange={(event) => set("essay_max", Number(event.target.value))}
               className="field px-2 py-1.5 text-sm"
             />
           </label>
