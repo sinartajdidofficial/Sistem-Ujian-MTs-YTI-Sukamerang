@@ -33,6 +33,7 @@ create table if not exists exams (
   answer_key jsonb not null default '{}'::jsonb,
   match_options int not null default 0,
   pg_options int not null default 4,
+  pgk_options int not null default 5, -- jumlah huruf pilihan soal PG kompleks
   essay_max int not null default 10,
   points jsonb not null default '{"pg":1,"pgk":1,"bs":1,"match":1,"essay":10}',  -- poin per tipe soal
   max_violations int not null default 5,
@@ -48,6 +49,7 @@ create table if not exists exams (
 
 alter table exams add column if not exists pdf_path text;
 alter table exams add column if not exists pgk_max int not null default 0;
+alter table exams add column if not exists pgk_options int not null default 5;
 
 -- poin per tipe soal; database lama diisi dari essay_max supaya nilai tidak berubah
 alter table exams add column if not exists points jsonb;
