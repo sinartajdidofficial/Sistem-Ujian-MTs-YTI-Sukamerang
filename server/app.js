@@ -144,6 +144,35 @@ export function pgkLimits(exam) {
   return out;
 }
 
+/* ---------------------------------------------------------------- poin */
+
+/**
+ * Poin per tipe soal. Inilah bobot tiap soal saat menghitung nilai:
+ * nilai = (poin diperoleh ÷ total poin) × 100.
+ * Ujian lama tanpa kolom `points` tetap 1 poin per soal objektif dan
+ * `essay_max` poin per soal uraian — hasilnya sama seperti sebelumnya.
+ */
+const DEFAULT_POINTS = { pg: 1, pgk: 1, bs: 1, match: 1, essay: 10 };
+
+function cleanPoints(raw, fallback = DEFAULT_POINTS) {
+  const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const base = fallback && typeof fallback === "object" ? fallback : DEFAULT_POINTS;
+  const out = {};
+  for (const type of TYPES) {
+    const fallbackValue = clampInt(base[type], 1, 100, DEFAULT_POINTS[type]);
+    out[type] = clampInt(source[type], 1, 100, fallbackValue);
+  }
+  return out;
+}
+
+/** Poin yang berlaku untuk sebuah ujian. */
+export function pointsOf(exam) {
+  const stored = exam?.points && typeof exam.points === "object" ? exam.points : null;
+  if (stored) return cleanPoints(stored, DEFAULT_POINTS);
+  // ujian dari versi lama: 1 poin per soal objektif, essay_max poin per uraian
+  return cleanPoints({}, { ...DEFAULT_POINTS, essay: exam?.essay_max || DEFAULT_POINTS.essay });
+}
+
 /* ---------------------------------------------------------------- scoring */
 
 function sectionsOf(counts) {
@@ -154,33 +183,56 @@ export function computeScore(exam, answers, manualScores) {
   const counts = exam.counts || {};
   const key = exam.answer_key || {};
   const manual = manualScores || {};
+  const points = pointsOf(exam);
   const detail = { pg: [], pgk: [], bs: [], match: [] };
-  let correct = 0;
-  let total = 0;
+  let correct = 0; // jumlah soal objektif yang benar (untuk tampilan, bukan nilai)
+  let total = 0; // jumlah soal objektif yang punya kunci
+  let objectivePoints = 0; // poin objektif yang diperoleh
+  let objectivePossible = 0; // poin objektif maksimal
 
   for (const type of ["pg", "pgk", "bs", "match"]) {
     const keyList = Array.isArray(key[type]) ? key[type] : [];
     const count = counts[type] || 0;
+    const worth = points[type];
     for (let i = 1; i <= count; i += 1) {
       const expected = keyList[i - 1];
       const hasKey = type === "pgk" ? Array.isArray(expected) && expected.length > 0 : !!expected;
       if (!hasKey) continue;
       total += 1;
+      objectivePossible += worth;
       const given = answers?.[type]?.[String(i)];
       let ok = false;
+      let earnedHere = 0;
       if (type === "pgk") {
+        /**
+         * PG kompleks: poin dibagi rata ke jumlah jawaban benar.
+         * Kunci 3 huruf = tiap huruf benar bernilai worth/3 — peserta yang baru
+         * memilih 1 huruf benar tetap mendapat bagiannya. Huruf keliru tidak
+         * menambah poin, jadi poin penuh hanya didapat bila semua kunci terpilih.
+         */
         const givenSet = Array.isArray(given) ? given : [];
-        ok = givenSet.length === expected.length && expected.every((l) => givenSet.includes(l));
+        const hits = expected.filter((letter) => givenSet.includes(letter)).length;
+        earnedHere = (worth * hits) / expected.length;
+        ok = hits === expected.length && givenSet.length === expected.length;
       } else {
         ok = given === expected;
+        earnedHere = ok ? worth : 0;
       }
       if (ok) correct += 1;
-      detail[type].push({ no: i, expected, given: given ?? null, correct: ok });
+      objectivePoints += earnedHere;
+      detail[type].push({
+        no: i,
+        expected,
+        given: given ?? null,
+        correct: ok,
+        points: worth,
+        earned: Math.round(earnedHere * 100) / 100,
+      });
     }
   }
 
   const essayCount = counts.essay || 0;
-  const essayMax = exam.essay_max || 10;
+  const essayMax = points.essay; // poin maksimal tiap soal uraian
   const essayTotal = essayCount * essayMax;
   let essayEarned = 0;
   let essayGraded = 0;
@@ -201,19 +253,20 @@ export function computeScore(exam, answers, manualScores) {
   }
 
   /**
-   * Setiap soal bernilai 1 poin — termasuk uraian, yang nilainya diberikan guru
-   * pada skala 0..essay_max lalu diskalakan ke 1 poin.
-   * Nilai = (poin diperoleh ÷ jumlah soal) × 100.
+   * Poin diperoleh = poin soal objektif yang benar + poin uraian dari guru.
+   * Total poin = (jumlah soal ber-kunci × poin per tipe) untuk semua tipe.
+   * Nilai = (poin diperoleh ÷ total poin) × 100.
    */
-  const essayPoints = essayMax > 0 ? essayEarned / essayMax : 0;
   const graded = essayTotal === 0 || essayGraded === essayCount;
-  const earned = Math.round((correct + essayPoints) * 100) / 100;
-  const possible = total + essayCount;
+  const earned = Math.round((objectivePoints + essayEarned) * 100) / 100;
+  const possible = Math.round((objectivePossible + essayTotal) * 100) / 100;
   const nilai = graded && possible > 0 ? Math.round((earned / possible) * 10000) / 100 : null;
 
   return {
+    points,
     objectiveCorrect: correct,
     objectiveTotal: total,
+    objectiveEarned: Math.round(objectivePoints * 100) / 100,
     essayEarned,
     essayTotal,
     essayGraded,
@@ -306,7 +359,7 @@ async function loadSession(req, res, next) {
   if (!found.rows.length) return res.status(404).json({ error: "Sesi ujian tidak ditemukan." });
   if (found.rows[0].token !== token) return res.status(403).json({ error: "Token sesi tidak cocok." });
   const exam = await q(
-    "SELECT id, code, title, subject, kelas, duration_minutes, status, counts, answer_key, match_options, pg_options, essay_max, max_violations, instructions, pdf_name, pdf_size, pdf_updated_at FROM exams WHERE id = $1",
+    "SELECT id, code, title, subject, kelas, duration_minutes, status, counts, answer_key, match_options, pg_options, essay_max, max_violations, instructions, points, pdf_name, pdf_size, pdf_updated_at FROM exams WHERE id = $1",
     [found.rows[0].exam_id]
   );
   if (!exam.rows.length) return res.status(404).json({ error: "Ujian tidak ditemukan." });
@@ -373,7 +426,7 @@ app.post("/api/admin/proctor-key/rotate", requireAdmin, async (_req, res) => {
 /* --- admin exams --- */
 
 const examPublicColumns = `id, code, title, subject, kelas, class_id, subject_id, duration_minutes, status, counts,
-  answer_key, match_options, pg_options, essay_max, max_violations, instructions, pdf_name, pdf_size,
+  answer_key, match_options, pg_options, essay_max, max_violations, instructions, points, pdf_name, pdf_size,
   pdf_updated_at, created_at`;
 
 app.get("/api/admin/exams", requireAdmin, async (_req, res) => {
@@ -430,6 +483,7 @@ app.post("/api/admin/exams", requireAdmin, async (req, res) => {
   const title = String(body.title || "").trim().slice(0, 160);
   if (!title) return res.status(400).json({ error: "Judul ujian wajib diisi." });
   const counts = cleanCounts(body.counts);
+  const points = cleanPoints(body.points, { ...DEFAULT_POINTS, essay: body.essay_max ?? DEFAULT_POINTS.essay });
   const matchOptions = clampInt(body.match_options, 2, 26, counts.match || 4);
   const { subject, kelas, subjectId, classId } = await resolveCatalog(body);
   if (!classId) {
@@ -447,8 +501,8 @@ app.post("/api/admin/exams", requireAdmin, async (req, res) => {
   if (!code) code = examCode();
   const result = await q(
     `INSERT INTO exams (code, title, subject, kelas, class_id, subject_id, duration_minutes, status, counts,
-       match_options, pg_options, essay_max, max_violations, instructions)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,'draft',$8,$9,$10,$11,$12,$13) RETURNING ${examPublicColumns}`,
+       match_options, pg_options, essay_max, max_violations, instructions, points)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'draft',$8,$9,$10,$11,$12,$13,$14) RETURNING ${examPublicColumns}`,
     [
       code,
       title,
@@ -460,9 +514,10 @@ app.post("/api/admin/exams", requireAdmin, async (req, res) => {
       counts,
       matchOptions,
       clampInt(body.pg_options, 2, 5, 4),
-      clampInt(body.essay_max, 1, 100, 10),
+      points.essay, // essay_max disalin supaya layar penilaian lama tetap cocok
       clampInt(body.max_violations, 1, 20, 5),
       String(body.instructions || "").slice(0, 2000),
+      points,
     ]
   );
   res.status(201).json({ exam: result.rows[0] });
@@ -482,12 +537,16 @@ app.patch("/api/admin/exams/:id", requireAdmin, async (req, res) => {
   const counts = body.counts ? cleanCounts(body.counts) : current.counts;
   const status = ["draft", "open", "closed"].includes(body.status) ? body.status : current.status;
   const answerKey = body.answer_key ? cleanKey(body.answer_key, counts) : cleanKey(current.answer_key, counts);
+  const currentPoints = pointsOf(current);
+  const points = body.points
+    ? cleanPoints(body.points, currentPoints)
+    : cleanPoints(currentPoints, { ...currentPoints, essay: body.essay_max ?? currentPoints.essay });
   const { subject, kelas, subjectId, classId } = await resolveCatalog(body, current);
   const result = await q(
     `UPDATE exams SET title=$1, subject=$2, kelas=$3, duration_minutes=$4, status=$5, counts=$6,
        answer_key=$7, match_options=$8, essay_max=$9, max_violations=$10, instructions=$11, pg_options=$12,
-       class_id=$13, subject_id=$14
-     WHERE id=$15 RETURNING ${examPublicColumns}`,
+       class_id=$13, subject_id=$14, points=$15
+     WHERE id=$16 RETURNING ${examPublicColumns}`,
     [
       body.title !== undefined ? String(body.title).trim().slice(0, 160) || current.title : current.title,
       subject,
@@ -501,7 +560,7 @@ app.patch("/api/admin/exams/:id", requireAdmin, async (req, res) => {
       body.match_options !== undefined
         ? clampInt(body.match_options, 2, 26, current.match_options)
         : current.match_options,
-      body.essay_max !== undefined ? clampInt(body.essay_max, 1, 100, current.essay_max) : current.essay_max,
+      points.essay, // essay_max mengikuti poin uraian
       body.max_violations !== undefined
         ? clampInt(body.max_violations, 1, 20, current.max_violations)
         : current.max_violations,
@@ -509,6 +568,7 @@ app.patch("/api/admin/exams/:id", requireAdmin, async (req, res) => {
       body.pg_options !== undefined ? clampInt(body.pg_options, 2, 5, current.pg_options) : current.pg_options,
       classId,
       subjectId,
+      points,
       req.params.id,
     ]
   );
