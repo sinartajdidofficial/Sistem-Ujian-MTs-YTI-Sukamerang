@@ -144,6 +144,21 @@ export function pgkLimits(exam) {
   return out;
 }
 
+/**
+ * Jumlah huruf pilihan untuk soal PG kompleks. Guru mengaturnya di form ujian,
+ * tetapi tidak pernah lebih kecil dari jumlah jawaban benar di kunci — supaya
+ * peserta selalu bisa memilih semua kunci.
+ */
+export function pgkOptionsFor(exam) {
+  const configured = clampInt(exam?.pgk_options, 2, 5, 5);
+  const key = Array.isArray(exam?.answer_key?.pgk) ? exam.answer_key.pgk : [];
+  const needed = key.reduce(
+    (max, value) => Math.max(max, Array.isArray(value) ? new Set(value).size : 0),
+    0
+  );
+  return Math.min(5, Math.max(configured, needed));
+}
+
 /* ---------------------------------------------------------------- poin */
 
 /**
@@ -359,7 +374,7 @@ async function loadSession(req, res, next) {
   if (!found.rows.length) return res.status(404).json({ error: "Sesi ujian tidak ditemukan." });
   if (found.rows[0].token !== token) return res.status(403).json({ error: "Token sesi tidak cocok." });
   const exam = await q(
-    "SELECT id, code, title, subject, kelas, duration_minutes, status, counts, answer_key, match_options, pg_options, essay_max, max_violations, instructions, points, pdf_name, pdf_size, pdf_updated_at FROM exams WHERE id = $1",
+    "SELECT id, code, title, subject, kelas, duration_minutes, status, counts, answer_key, match_options, pg_options, pgk_options, essay_max, max_violations, instructions, points, pdf_name, pdf_size, pdf_updated_at FROM exams WHERE id = $1",
     [found.rows[0].exam_id]
   );
   if (!exam.rows.length) return res.status(404).json({ error: "Ujian tidak ditemukan." });
@@ -426,13 +441,13 @@ app.post("/api/admin/proctor-key/rotate", requireAdmin, async (_req, res) => {
 /* --- admin exams --- */
 
 const examPublicColumns = `id, code, title, subject, kelas, class_id, subject_id, duration_minutes, status, counts,
-  answer_key, match_options, pg_options, essay_max, max_violations, instructions, points, pdf_name, pdf_size,
-  pdf_updated_at, created_at`;
+  answer_key, match_options, pg_options, pgk_options, essay_max, max_violations, instructions, points, pdf_name,
+  pdf_size, pdf_updated_at, created_at`;
 
 app.get("/api/admin/exams", requireAdmin, async (_req, res) => {
   const result = await q(
     `SELECT e.id, e.code, e.title, e.subject, e.kelas, e.class_id, e.subject_id, e.duration_minutes, e.status, e.counts,
-            e.answer_key, e.match_options, e.pg_options, e.essay_max, e.max_violations, e.instructions,
+            e.answer_key, e.match_options, e.pg_options, e.pgk_options, e.essay_max, e.max_violations, e.instructions,
             e.pdf_name, e.pdf_size, e.pdf_updated_at, e.created_at,
             (SELECT count(*)::int FROM sessions s WHERE s.exam_id = e.id) AS session_count,
             (SELECT count(*)::int FROM sessions s WHERE s.exam_id = e.id AND s.submitted_at IS NOT NULL) AS submitted_count
@@ -501,8 +516,8 @@ app.post("/api/admin/exams", requireAdmin, async (req, res) => {
   if (!code) code = examCode();
   const result = await q(
     `INSERT INTO exams (code, title, subject, kelas, class_id, subject_id, duration_minutes, status, counts,
-       match_options, pg_options, essay_max, max_violations, instructions, points)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,'draft',$8,$9,$10,$11,$12,$13,$14) RETURNING ${examPublicColumns}`,
+       match_options, pg_options, pgk_options, essay_max, max_violations, instructions, points)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'draft',$8,$9,$10,$11,$12,$13,$14,$15) RETURNING ${examPublicColumns}`,
     [
       code,
       title,
@@ -514,6 +529,7 @@ app.post("/api/admin/exams", requireAdmin, async (req, res) => {
       counts,
       matchOptions,
       clampInt(body.pg_options, 2, 5, 4),
+      clampInt(body.pgk_options, 2, 5, 5),
       points.essay, // essay_max disalin supaya layar penilaian lama tetap cocok
       clampInt(body.max_violations, 1, 20, 5),
       String(body.instructions || "").slice(0, 2000),
@@ -545,8 +561,8 @@ app.patch("/api/admin/exams/:id", requireAdmin, async (req, res) => {
   const result = await q(
     `UPDATE exams SET title=$1, subject=$2, kelas=$3, duration_minutes=$4, status=$5, counts=$6,
        answer_key=$7, match_options=$8, essay_max=$9, max_violations=$10, instructions=$11, pg_options=$12,
-       class_id=$13, subject_id=$14, points=$15
-     WHERE id=$16 RETURNING ${examPublicColumns}`,
+       class_id=$13, subject_id=$14, points=$15, pgk_options=$16
+     WHERE id=$17 RETURNING ${examPublicColumns}`,
     [
       body.title !== undefined ? String(body.title).trim().slice(0, 160) || current.title : current.title,
       subject,
@@ -569,6 +585,9 @@ app.patch("/api/admin/exams/:id", requireAdmin, async (req, res) => {
       classId,
       subjectId,
       points,
+      body.pgk_options !== undefined
+        ? clampInt(body.pgk_options, 2, 5, current.pgk_options ?? 5)
+        : current.pgk_options,
       req.params.id,
     ]
   );
@@ -896,7 +915,7 @@ app.get("/api/admin/exams/:id/pdf", requireAdmin, async (req, res) => {
 app.get("/api/exams/:code", async (req, res) => {
   const result = await q(
     `SELECT id, code, title, subject, kelas, class_id, duration_minutes, status, counts, match_options, pg_options,
-            essay_max, max_violations, instructions, pdf_name, pdf_size, pdf_updated_at
+            pgk_options, essay_max, max_violations, instructions, pdf_name, pdf_size, pdf_updated_at
      FROM exams WHERE upper(code) = upper($1)`,
     [req.params.code]
   );
@@ -937,6 +956,8 @@ function publicSession(session, exam) {
     essayMax: exam.essay_max,
     matchOptions: exam.match_options,
     pgOptions: exam.pg_options,
+    /** jumlah huruf pilihan soal PG kompleks (tidak pernah kurang dari jumlah kunci) */
+    pgkOptions: pgkOptionsFor(exam),
     /** batas pilihan per nomor untuk soal PG kompleks (dari kunci jawaban) */
     pgkLimits: pgkLimits(exam),
     exam: {

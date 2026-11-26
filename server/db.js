@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS exams (
   answer_key jsonb NOT NULL DEFAULT '{}'::jsonb,
   match_options int NOT NULL DEFAULT 0,
   pg_options int NOT NULL DEFAULT 4,
+  pgk_options int NOT NULL DEFAULT 5, -- jumlah huruf pilihan soal PG kompleks
   essay_max int NOT NULL DEFAULT 10,
   -- poin per tipe soal; nilai = (poin diperoleh / total poin) x 100
   points jsonb NOT NULL DEFAULT '{"pg":1,"pgk":1,"bs":1,"match":1,"essay":10}'::jsonb,
@@ -133,6 +134,7 @@ CREATE INDEX IF NOT EXISTS students_class_idx ON students(class_id);
 
 ALTER TABLE exams ADD COLUMN IF NOT EXISTS pdf_path text;
 ALTER TABLE exams ADD COLUMN IF NOT EXISTS pgk_max int NOT NULL DEFAULT 0; -- tidak dipakai lagi
+ALTER TABLE exams ADD COLUMN IF NOT EXISTS pgk_options int NOT NULL DEFAULT 5;
 -- poin per tipe soal: kolom baru diisi dari essay_max ujian lama supaya nilainya tidak berubah
 ALTER TABLE exams ADD COLUMN IF NOT EXISTS points jsonb;
 UPDATE exams SET points = jsonb_build_object('pg', 1, 'pgk', 1, 'bs', 1, 'match', 1, 'essay', essay_max)
