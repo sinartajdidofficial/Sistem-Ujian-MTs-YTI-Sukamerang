@@ -34,8 +34,9 @@ create table if not exists exams (
   match_options int not null default 0,
   pg_options int not null default 4,
   essay_max int not null default 10,
+  points jsonb not null default '{"pg":1,"pgk":1,"bs":1,"match":1,"essay":10}',  -- poin per tipe soal
   max_violations int not null default 5,
-  pgk_max int not null default 0,              -- 0 = bebas, >0 = batas pilihan PG kompleks
+  pgk_max int not null default 0,              -- tidak dipakai lagi: batas PGK mengikuti kunci jawaban
   instructions text not null default '',
   pdf bytea,                                      -- dipakai bila file disimpan di database
   pdf_path text,                                  -- dipakai bila file disimpan di Supabase Storage
@@ -47,6 +48,13 @@ create table if not exists exams (
 
 alter table exams add column if not exists pdf_path text;
 alter table exams add column if not exists pgk_max int not null default 0;
+
+-- poin per tipe soal; database lama diisi dari essay_max supaya nilai tidak berubah
+alter table exams add column if not exists points jsonb;
+update exams set points = jsonb_build_object('pg', 1, 'pgk', 1, 'bs', 1, 'match', 1, 'essay', essay_max)
+  where points is null;
+alter table exams alter column points set default '{"pg":1,"pgk":1,"bs":1,"match":1,"essay":10}';
+alter table exams alter column points set not null;
 alter table exams add column if not exists class_id int;
 alter table exams add column if not exists subject_id int;
 
