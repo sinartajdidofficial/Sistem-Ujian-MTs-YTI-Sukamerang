@@ -16,6 +16,8 @@ type PanelProps = {
   counts: Counts;
   answers: Answers;
   pgOptions: number;
+  /** jumlah huruf pilihan untuk PG kompleks (diatur guru di form ujian) */
+  pgkOptions: number;
   /** batas pilihan per nomor untuk PG kompleks — diambil dari kunci jawaban */
   pgkLimits: Record<string, number>;
   matchOptions: number;
@@ -142,8 +144,10 @@ export function PgPanel({ counts, answers, pgOptions, onChange, onClear }: Panel
   );
 }
 
-export function PgkPanel({ counts, answers, pgOptions, pgkLimits, onChange, onClear }: PanelProps) {
-  const letters = LETTERS.slice(0, pgOptions || 4);
+export function PgkPanel({ counts, answers, pgkOptions, pgkLimits, onChange, onClear }: PanelProps) {
+  // huruf yang tampil = pengaturan guru, tetapi selalu cukup untuk menampung kunci
+  const needed = Math.max(0, ...Object.values(pgkLimits || {}).map((value) => Number(value) || 0));
+  const letters = LETTERS.slice(0, Math.min(LETTERS.length, Math.max(pgkOptions || 5, needed)));
 
   return (
     <div className="space-y-1.5">
