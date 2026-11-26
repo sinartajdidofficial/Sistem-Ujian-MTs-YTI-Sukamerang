@@ -34,6 +34,8 @@ export type Exam = {
   answer_key: AnswerKey;
   match_options: number;
   pg_options: number;
+  /** jumlah huruf pilihan untuk soal PG kompleks */
+  pgk_options: number;
   /** poin untuk tiap tipe soal — nilai = (poin diperoleh ÷ total poin) × 100 */
   points: Counts;
   /** poin per soal uraian versi lama; kini mengikuti points.essay */
@@ -90,6 +92,8 @@ export type Session = {
   essayMax: number;
   matchOptions: number;
   pgOptions: number;
+  /** jumlah huruf pilihan untuk soal PG kompleks */
+  pgkOptions: number;
   /**
    * Batas pilihan per nomor untuk soal PG kompleks, dihitung server dari kunci
    * jawaban: 2 jawaban benar → maksimal 2 pilihan, 3 → 3. Nomor tanpa kunci
