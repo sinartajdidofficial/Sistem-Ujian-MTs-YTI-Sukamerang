@@ -586,6 +586,7 @@ export default function ExamPage() {
               counts={counts}
               answers={answers}
               pgOptions={session.pgOptions || 4}
+              pgkOptions={session.pgkOptions || 5}
               pgkLimits={session.pgkLimits || {}}
               matchOptions={session.matchOptions || counts.match}
               essayMax={session.essayMax || 10}

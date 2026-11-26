@@ -336,6 +336,15 @@ function KeyTab({ exam, onChange }: { exam: Exam; onChange: () => Promise<void> 
   const sections = (["pg", "pgk", "bs", "match"] as QuestionType[]).filter(
     (type) => (counts[type as keyof Counts] || 0) > 0
   );
+  /** huruf yang ditampilkan untuk PG kompleks: pengaturan guru, minimal sebanyak kunci terpanjang */
+  const longestPgkKey = ((exam.answer_key?.pgk as (string[] | null)[] | undefined) || []).reduce(
+    (max, value) => Math.max(max, Array.isArray(value) ? value.length : 0),
+    0
+  );
+  const pgkLetterCount = Math.min(
+    LETTERS.length,
+    Math.max(2, exam.pgk_options || 5, longestPgkKey)
+  );
 
   const filledCount = sections.reduce((sum, type) => {
     const list = (key[type] as (string | string[] | null)[]) || [];
@@ -432,7 +441,9 @@ function KeyTab({ exam, onChange }: { exam: Exam; onChange: () => Promise<void> 
             ? MATCH_LETTERS.slice(0, Math.max(2, exam.match_options))
             : type === "bs"
               ? ["B", "S"]
-              : LETTERS.slice(0, exam.pg_options || 4);
+              : type === "pgk"
+                ? LETTERS.slice(0, pgkLetterCount)
+                : LETTERS.slice(0, exam.pg_options || 4);
         return (
           <div key={type} className="card overflow-hidden">
             <div className="flex items-center justify-between border-b border-line bg-paper-deep/60 px-4 py-2">
@@ -957,6 +968,7 @@ function SettingTab({
     duration_minutes: exam.duration_minutes,
     counts: exam.counts,
     pg_options: exam.pg_options,
+    pgk_options: exam.pgk_options ?? 5,
     match_options: exam.match_options,
     points: exam.points || { pg: 1, pgk: 1, bs: 1, match: 1, essay: exam.essay_max || 10 },
     max_violations: exam.max_violations,
