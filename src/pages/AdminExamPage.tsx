@@ -28,6 +28,9 @@ import { Modal } from "./AdminPage";
 const LETTERS = ["A", "B", "C", "D", "E"];
 const MATCH_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
+/** poin tiap soal uraian: dari `points.essay` (ujian lama memakai essay_max) */
+const essayPoints = (exam: Exam) => exam.points?.essay || exam.essay_max || 10;
+
 type TabKey = "pdf" | "key" | "hasil" | "setting";
 
 type SessionRow = Awaited<ReturnType<typeof adminApi.sessions>>["sessions"][number];
@@ -390,8 +393,10 @@ function KeyTab({ exam, onChange }: { exam: Exam; onChange: () => Promise<void> 
             {exam.counts.pgk > 0 && (
               <p className="mt-1.5 text-[11.5px] leading-relaxed text-ink-soft">
                 PG kompleks: <span className="font-bold">batas pilihan mengikuti kunci</span> — nomor dengan 2
-                jawaban benar hanya bisa dipilih 2, nomor dengan 3 jawaban benar bisa dipilih 3. Tidak ada
-                pengaturan tambahan; cukup isi kuncinya di sini.
+                jawaban benar hanya bisa dipilih 2, nomor dengan 3 jawaban benar bisa dipilih 3. Poin tiap nomor{" "}
+                <span className="font-bold">dibagi rata ke jawaban benarnya</span>: kunci 3 huruf dengan poin 3
+                berarti 1 poin per huruf benar, dan peserta yang baru memilih satu huruf benar tetap mendapat
+                bagiannya.
               </p>
             )}
           </div>
@@ -485,7 +490,7 @@ function KeyTab({ exam, onChange }: { exam: Exam; onChange: () => Promise<void> 
             <PenLine size={13} /> {counts.essay} soal uraian dinilai manual
           </p>
           <p className="mt-1 text-[11.5px] leading-relaxed text-muted">
-            Buka tab Hasil & Nilai, pilih peserta, lalu beri poin 0–{exam.essay_max} untuk setiap jawaban uraian.
+            Buka tab Hasil & Nilai, pilih peserta, lalu beri poin 0–{essayPoints(exam)} untuk setiap jawaban uraian.
           </p>
         </div>
       )}
@@ -866,7 +871,7 @@ function GradeModal({
           {data.exam.counts.essay > 0 ? (
             <div>
               <p className="mb-1.5 text-[11px] font-extrabold uppercase tracking-wider text-brand">
-                Jawaban uraian (0–{data.exam.essay_max} poin)
+                Jawaban uraian (0–{essayPoints(data.exam)} poin)
               </p>
               <div className="max-h-[40vh] space-y-2 overflow-y-auto pr-1">
                 {Array.from({ length: data.exam.counts.essay }, (_, index) => {
@@ -879,7 +884,7 @@ function GradeModal({
                         <input
                           type="number"
                           min={0}
-                          max={data.exam.essay_max}
+                          max={essayPoints(data.exam)}
                           step={0.5}
                           value={scores[String(no)] ?? ""}
                           onChange={(event) => {
@@ -953,7 +958,7 @@ function SettingTab({
     counts: exam.counts,
     pg_options: exam.pg_options,
     match_options: exam.match_options,
-    essay_max: exam.essay_max,
+    points: exam.points || { pg: 1, pgk: 1, bs: 1, match: 1, essay: exam.essay_max || 10 },
     max_violations: exam.max_violations,
     instructions: exam.instructions,
   };

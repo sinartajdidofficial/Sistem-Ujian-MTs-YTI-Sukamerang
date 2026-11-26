@@ -69,7 +69,7 @@ export default function ResultPage() {
   const heroValue = finalNilai !== null ? fmtNum(finalNilai) : objectivePercent !== null ? fmtNum(objectivePercent) : "—";
   const heroFormula =
     finalNilai !== null && score
-      ? `${fmtNum(score.earned)} poin dari ${score.possible} soal × 100`
+      ? `${fmtNum(score.earned)} poin dari ${fmtNum(score.possible)} poin × 100`
       : score
         ? `${score.objectiveCorrect} benar dari ${score.objectiveTotal} soal × 100`
         : "belum ada data";
@@ -170,7 +170,7 @@ export default function ResultPage() {
                   <PenLine size={13} /> {score.essayCount} soal uraian menunggu penilaian guru
                 </p>
                 <p className="mt-1 text-[11.5px] leading-relaxed text-[#7a5c05]/80">
-                  Angka di atas baru dihitung dari soal objektif. Nilai akhir (poin ÷ jumlah soal × 100)
+                  Angka di atas baru dihitung dari soal objektif. Nilai akhir (poin ÷ total poin × 100)
                   muncul setelah guru menilai uraian.
                 </p>
               </div>
