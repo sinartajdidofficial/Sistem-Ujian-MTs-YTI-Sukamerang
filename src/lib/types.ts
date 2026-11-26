@@ -34,6 +34,9 @@ export type Exam = {
   answer_key: AnswerKey;
   match_options: number;
   pg_options: number;
+  /** poin untuk tiap tipe soal — nilai = (poin diperoleh ÷ total poin) × 100 */
+  points: Counts;
+  /** poin per soal uraian versi lama; kini mengikuti points.essay */
   essay_max: number;
   max_violations: number;
   instructions: string;
@@ -50,6 +53,8 @@ export type Exam = {
 export type ExamPublic = Omit<Exam, "answer_key"> & { hasPdf: boolean };
 
 export type ScoreDetail = {
+  /** bobot poin yang dipakai saat menilai (bisa tidak ada pada nilai lama) */
+  points?: Counts;
   objectiveCorrect: number;
   objectiveTotal: number;
   essayEarned: number;
