@@ -1,6 +1,8 @@
 import express from "express";
 import crypto from "node:crypto";
 import { q, initSchema } from "./db.js";
+import { buildResultPdf } from "./exportPdf.js";
+import { buildResultXlsx } from "./exportXlsx.js";
 
 const app = express();
 
@@ -1329,48 +1331,71 @@ app.delete("/api/admin/sessions/:id", requireAdmin, async (req, res) => {
   res.json({ ok: true });
 });
 
-app.get("/api/admin/exams/:id/export.csv", requireAdmin, async (req, res) => {
+/**
+ * Kop hasil ujian. Nama madrasah, tahun pelajaran, dan nama penanda tangan
+ * dibaca dari tabel settings bila ada; kalau tidak, dipakai nilai bawaan di
+ * exportData.js. Semua kunci ini opsional.
+ */
+const LETTER_SETTINGS = [
+  "madrasah_name",
+  "madrasah_city",
+  "academic_year",
+  "madrasah_head",
+  "subject_teacher",
+];
+
+async function letterSettings() {
+  try {
+    const found = await q("SELECT key, value FROM settings WHERE key = ANY($1)", [LETTER_SETTINGS]);
+    const out = {};
+    for (const row of found.rows) {
+      const value = String(row.value ?? "").trim();
+      if (value) out[row.key] = value;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** Data bersama untuk ekspor PDF dan Excel. */
+async function exportPayload(req) {
   const examRow = await q(`SELECT ${examPublicColumns} FROM exams WHERE id = $1`, [req.params.id]);
-  if (!examRow.rows.length) return res.status(404).json({ error: "Ujian tidak ditemukan." });
-  const rows = await q(
+  if (!examRow.rows.length) return null;
+  const exam = examRow.rows[0];
+  const sessions = await q(
     "SELECT * FROM sessions WHERE exam_id = $1 ORDER BY student_class ASC, student_name ASC",
     [req.params.id]
   );
-  const exam = examRow.rows[0];
-  const header = [
-    "Nama",
-    "Kelas",
-    "Mulai",
-    "Dikumpulkan",
-    "Benar Objektif",
-    "Total Objektif",
-    "Nilai Uraian",
-    "Total Uraian",
-    "Nilai Akhir",
-    "Pelanggaran",
-    "Status",
-  ];
-  const lines = [header.join(",")];
-  for (const row of rows.rows) {
-    const detail = computeScore(exam, row.answers || {}, row.manual_scores);
-    const cells = [
-      row.student_name,
-      row.student_class,
-      row.started_at ? new Date(row.started_at).toLocaleString("id-ID") : "",
-      row.submitted_at ? new Date(row.submitted_at).toLocaleString("id-ID") : "",
-      String(detail.objectiveCorrect),
-      String(detail.objectiveTotal),
-      String(detail.essayEarned),
-      String(detail.essayTotal),
-      detail.nilai === null ? "" : String(detail.nilai),
-      String(row.violations),
-      row.submitted_at ? (row.auto_submitted ? "Otomatis" : "Dikumpulkan") : "Berlangsung",
-    ];
-    lines.push(cells.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","));
-  }
-  res.setHeader("Content-Type", "text/csv; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="nilai-${exam.code}.csv"`);
-  res.send("\ufeff" + lines.join("\r\n"));
+  return {
+    exam,
+    sessions: sessions.rows,
+    settings: await letterSettings(),
+    scoreOf: (session) => session.score_detail || computeScore(exam, session.answers || {}, session.manual_scores),
+  };
+}
+
+app.get("/api/admin/exams/:id/export.pdf", requireAdmin, async (req, res) => {
+  const payload = await exportPayload(req);
+  if (!payload) return res.status(404).json({ error: "Ujian tidak ditemukan." });
+  const bytes = await buildResultPdf(payload);
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="hasil-${payload.exam.code}.pdf"`);
+  res.setHeader("Cache-Control", "no-store");
+  res.send(Buffer.from(bytes));
+});
+
+app.get("/api/admin/exams/:id/export.xlsx", requireAdmin, async (req, res) => {
+  const payload = await exportPayload(req);
+  if (!payload) return res.status(404).json({ error: "Ujian tidak ditemukan." });
+  const buffer = await buildResultXlsx(payload);
+  res.setHeader(
+    "Content-Type",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  );
+  res.setHeader("Content-Disposition", `attachment; filename="hasil-${payload.exam.code}.xlsx"`);
+  res.setHeader("Cache-Control", "no-store");
+  res.send(buffer);
 });
 
 /* --- sweep expired sessions --- */

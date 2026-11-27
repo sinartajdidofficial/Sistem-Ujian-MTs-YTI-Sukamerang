@@ -8,6 +8,8 @@
   },
   "dependencies": {
     "express": "4.22.3",
-    "pg": "8.23.1"
+    "pg": "8.23.1",
+    "pdf-lib": "1.17.1",
+    "exceljs": "4.4.0"
   }
 }
