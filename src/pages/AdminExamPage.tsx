@@ -5,7 +5,7 @@ import {
   CheckCircle2,
   ClipboardCheck,
   Copy,
-  Download,
+  FileSpreadsheet,
   FileText,
   KeyRound,
   Loader2,
@@ -531,6 +531,7 @@ function normalizeKey(exam: Exam): AnswerKey {
 /* -------------------------------------------------------------- hasil tab */
 
 function HasilTab({ exam }: { exam: Exam }) {
+  const [exporting, setExporting] = useState<"pdf" | "xlsx" | null>(null);
   const [rows, setRows] = useState<SessionRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [openSession, setOpenSession] = useState<string | null>(null);
@@ -580,9 +581,11 @@ function HasilTab({ exam }: { exam: Exam }) {
     await adminApi.deleteSession(row.id).then(() => load());
   };
 
-  const exportCsv = async () => {
+  /** Hasil ujian diunduh sebagai PDF (kop madrasah) atau Excel (.xlsx). */
+  const exportResults = async (format: "pdf" | "xlsx") => {
+    setExporting(format);
     try {
-      const response = await fetch(`/api/admin/exams/${exam.id}/export.csv`, {
+      const response = await fetch(`/api/admin/exams/${exam.id}/export.${format}`, {
         headers: { "x-admin-token": localStorage.getItem("mts-yti-admin-token") || "" },
       });
       if (!response.ok) throw new Error("gagal");
@@ -590,13 +593,15 @@ function HasilTab({ exam }: { exam: Exam }) {
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `nilai-${exam.code}.csv`;
+      link.download = `hasil-${exam.code}.${format}`;
       document.body.appendChild(link);
       link.click();
       link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 5000);
     } catch {
-      /* ignore */
+      /* biarkan: tombol bisa dicoba lagi */
+    } finally {
+      setExporting(null);
     }
   };
 
@@ -617,11 +622,31 @@ function HasilTab({ exam }: { exam: Exam }) {
             </button>
             <button
               type="button"
-              onClick={() => void exportCsv()}
-              disabled={rows.length === 0}
+              onClick={() => void exportResults("pdf")}
+              disabled={rows.length === 0 || exporting !== null}
+              aria-label="Unduh hasil ujian sebagai PDF"
               className="btn-ghost px-2 py-1 text-[11px]"
             >
-              <Download size={12} /> CSV
+              {exporting === "pdf" ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                <FileText size={12} />
+              )}
+              PDF
+            </button>
+            <button
+              type="button"
+              onClick={() => void exportResults("xlsx")}
+              disabled={rows.length === 0 || exporting !== null}
+              aria-label="Unduh hasil ujian sebagai Excel"
+              className="btn-ghost px-2 py-1 text-[11px]"
+            >
+              {exporting === "xlsx" ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                <FileSpreadsheet size={12} />
+              )}
+              Excel
             </button>
           </div>
         </div>
